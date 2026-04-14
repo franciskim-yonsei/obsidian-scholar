@@ -8,6 +8,7 @@ export default tseslint.config(
 		languageOptions: {
 			globals: {
 				...globals.browser,
+				...globals.node,
 			},
 			parserOptions: {
 				projectService: {
@@ -22,6 +23,11 @@ export default tseslint.config(
 		},
 	},
 	...obsidianmd.configs.recommended,
+	{
+		rules: {
+			'import/no-nodejs-modules': 'off',
+		},
+	},
 	globalIgnores([
 		"node_modules",
 		"dist",

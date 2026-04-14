@@ -1,99 +1,108 @@
-import {App, Editor, MarkdownView, Modal, Notice, Plugin} from 'obsidian';
-import {DEFAULT_SETTINGS, MyPluginSettings, SampleSettingTab} from "./settings";
+import { Notice, Plugin } from 'obsidian';
+import { runPipelineForDateRange } from './pipeline';
+import { mergeSettings } from './settings-data';
+import { ScholarSettingTab } from './settings';
+import { PluginData, ScholarSettings } from './types';
+import { getClampedCatchupStart, getDaysBetween, getYesterdayDateString, isSameLocalDay, toDateString } from './utils/dates';
+import { getErrorMessage } from './utils/strings';
 
-// Remember to rename these classes and interfaces!
+export default class ScholarPlugin extends Plugin {
+	settings: ScholarSettings = mergeSettings();
+	lastRunTimestamp: string | null = null;
+	private isRunning = false;
 
-export default class MyPlugin extends Plugin {
-	settings: MyPluginSettings;
+	async onload(): Promise<void> {
+		await this.loadPluginData();
+		this.addSettingTab(new ScholarSettingTab(this.app, this));
 
-	async onload() {
-		await this.loadSettings();
-
-		// This creates an icon in the left ribbon.
-		this.addRibbonIcon('dice', 'Sample', (evt: MouseEvent) => {
-			// Called when the user clicks the icon.
-			new Notice('This is a notice!');
+		this.addRibbonIcon('newspaper', 'Scholar: fetch papers', () => {
+			void this.runScheduled(true);
 		});
 
-		// This adds a status bar item to the bottom of the app. Does not work on mobile apps.
-		const statusBarItemEl = this.addStatusBarItem();
-		statusBarItemEl.setText('Status bar text');
-
-		// This adds a simple command that can be triggered anywhere
 		this.addCommand({
-			id: 'open-modal-simple',
-			name: 'Open modal (simple)',
+			id: 'scholar-run',
+			name: 'Fetch papers and generate newsletter',
 			callback: () => {
-				new SampleModal(this.app).open();
+				void this.runScheduled(true);
+			},
+		});
+
+		if (this.settings.runOnStartup) {
+			this.app.workspace.onLayoutReady(() => {
+				void this.runScheduled(false);
+			});
+		}
+	}
+
+	private getDatesToProcess(force: boolean, now: Date): string[] {
+		if (!this.lastRunTimestamp) {
+			return [force ? toDateString(now) : getYesterdayDateString(now)];
+		}
+
+		const lastRun = new Date(this.lastRunTimestamp);
+		if (Number.isNaN(lastRun.getTime())) {
+			return [force ? toDateString(now) : getYesterdayDateString(now)];
+		}
+
+		const catchupStart = getClampedCatchupStart(lastRun, now, this.settings.catchupLimitDays);
+		const dates = getDaysBetween(catchupStart, now);
+		if (dates.length === 0 && force) {
+			return [toDateString(now)];
+		}
+
+		return dates;
+	}
+
+	async runScheduled(force: boolean): Promise<void> {
+		if (this.isRunning) {
+			if (force) {
+				new Notice('Scholar is already running.');
 			}
-		});
-		// This adds an editor command that can perform some operation on the current editor instance
-		this.addCommand({
-			id: 'replace-selected',
-			name: 'Replace selected content',
-			editorCallback: (editor: Editor, view: MarkdownView) => {
-				editor.replaceSelection('Sample editor command');
+			return;
+		}
+
+		const now = new Date();
+		if (!force && this.lastRunTimestamp) {
+			const lastRun = new Date(this.lastRunTimestamp);
+			if (!Number.isNaN(lastRun.getTime()) && isSameLocalDay(lastRun, now)) {
+				return;
 			}
-		});
-		// This adds a complex command that can check whether the current state of the app allows execution of the command
-		this.addCommand({
-			id: 'open-modal-complex',
-			name: 'Open modal (complex)',
-			checkCallback: (checking: boolean) => {
-				// Conditions to check
-				const markdownView = this.app.workspace.getActiveViewOfType(MarkdownView);
-				if (markdownView) {
-					// If checking is true, we're simply "checking" if the command can be run.
-					// If checking is false, then we want to actually perform the operation.
-					if (!checking) {
-						new SampleModal(this.app).open();
-					}
+		}
 
-					// This command will only show up in Command Palette when the check function returns true
-					return true;
-				}
-				return false;
+		const datesToProcess = this.getDatesToProcess(force, now);
+		if (datesToProcess.length === 0) {
+			return;
+		}
+
+		this.isRunning = true;
+		try {
+			for (const date of datesToProcess) {
+				new Notice(`Scholar: processing ${date}...`);
+				await runPipelineForDateRange(this.app, this.settings, date, date);
 			}
-		});
 
-		// This adds a settings tab so the user can configure various aspects of the plugin
-		this.addSettingTab(new SampleSettingTab(this.app, this));
-
-		// If the plugin hooks up any global DOM events (on parts of the app that doesn't belong to this plugin)
-		// Using this function will automatically remove the event listener when this plugin is disabled.
-		this.registerDomEvent(document, 'click', (evt: MouseEvent) => {
-			new Notice("Click");
-		});
-
-		// When registering intervals, this function will automatically clear the interval when the plugin is disabled.
-		this.registerInterval(window.setInterval(() => console.log('setInterval'), 5 * 60 * 1000));
-
+			this.lastRunTimestamp = now.toISOString();
+			await this.savePluginData();
+			new Notice(`Scholar: finished ${datesToProcess.length} run${datesToProcess.length === 1 ? '' : 's'}.`);
+		} catch (error) {
+			console.error('Scholar: pipeline failed.', error);
+			new Notice(`Scholar: ${getErrorMessage(error)}`);
+		} finally {
+			this.isRunning = false;
+		}
 	}
 
-	onunload() {
+	async loadPluginData(): Promise<void> {
+		const loaded = (await this.loadData()) as Partial<PluginData> | null;
+		this.lastRunTimestamp = loaded?.lastRunTimestamp ?? null;
+		this.settings = mergeSettings(loaded?.settings);
 	}
 
-	async loadSettings() {
-		this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData() as Partial<MyPluginSettings>);
-	}
-
-	async saveSettings() {
-		await this.saveData(this.settings);
-	}
-}
-
-class SampleModal extends Modal {
-	constructor(app: App) {
-		super(app);
-	}
-
-	onOpen() {
-		let {contentEl} = this;
-		contentEl.setText('Woah!');
-	}
-
-	onClose() {
-		const {contentEl} = this;
-		contentEl.empty();
+	async savePluginData(): Promise<void> {
+		const data: PluginData = {
+			lastRunTimestamp: this.lastRunTimestamp,
+			settings: this.settings,
+		};
+		await this.saveData(data);
 	}
 }

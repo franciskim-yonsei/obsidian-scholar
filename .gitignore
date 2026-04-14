@@ -20,3 +20,11 @@ data.json
 
 # Exclude macOS Finder (System Explorer) View States
 .DS_Store
+
+# Harness output
+.harness-output/
+.harness-*
+sample-notes/
+
+# Local agent/editor state
+.claude/

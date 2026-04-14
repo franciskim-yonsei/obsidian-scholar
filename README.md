@@ -1,90 +1,106 @@
-# Obsidian Sample Plugin
+# Scholar
 
-This is a sample plugin for Obsidian (https://obsidian.md).
+Scholar is an Obsidian desktop plugin that builds a daily research newsletter inside your vault.
 
-This project uses TypeScript to provide type checking and documentation.
-The repo depends on the latest plugin API (obsidian.d.ts) in TypeScript Definition format, which contains TSDoc comments describing what it does.
+It can:
+- fetch papers from PubMed, bioRxiv, and Europe PMC
+- filter them with a configurable keyword query
+- score and summarize them with the `pi` CLI
+- write a dated markdown digest into your chosen folder
+- keep a seen log so the same papers are not reprocessed every day
 
-This sample plugin demonstrates some of the basic functionality the plugin API can do.
-- Adds a ribbon icon, which shows a Notice when clicked.
-- Adds a command "Open modal (simple)" which opens a Modal.
-- Adds a plugin setting tab to the settings page.
-- Registers a global click event and output 'click' to the console.
-- Registers a global interval which logs 'setInterval' to the console.
+## Requirements
 
-## First time developing plugins?
+- Obsidian desktop
+- `pi` available on your PATH, or a full executable path configured in the plugin settings
+- network access to the selected paper sources
 
-Quick starting guide for new plugin devs:
+## Development
 
-- Check if [someone already developed a plugin for what you want](https://obsidian.md/plugins)! There might be an existing plugin similar enough that you can partner up with.
-- Make a copy of this repo as a template with the "Use this template" button (login to GitHub if you don't see it).
-- Clone your repo to a local development folder. For convenience, you can place this folder in your `.obsidian/plugins/your-plugin-name` folder.
-- Install NodeJS, then run `npm i` in the command line under your repo folder.
-- Run `npm run dev` to compile your plugin from `main.ts` to `main.js`.
-- Make changes to `main.ts` (or create new `.ts` files). Those changes should be automatically compiled into `main.js`.
-- Reload Obsidian to load the new version of your plugin.
-- Enable plugin in settings window.
-- For updates to the Obsidian API run `npm update` in the command line under your repo folder.
-
-## Releasing new releases
-
-- Update your `manifest.json` with your new version number, such as `1.0.1`, and the minimum Obsidian version required for your latest release.
-- Update your `versions.json` file with `"new-plugin-version": "minimum-obsidian-version"` so older versions of Obsidian can download an older version of your plugin that's compatible.
-- Create new GitHub release using your new version number as the "Tag version". Use the exact version number, don't include a prefix `v`. See here for an example: https://github.com/obsidianmd/obsidian-sample-plugin/releases
-- Upload the files `manifest.json`, `main.js`, `styles.css` as binary attachments. Note: The manifest.json file must be in two places, first the root path of your repository and also in the release.
-- Publish the release.
-
-> You can simplify the version bump process by running `npm version patch`, `npm version minor` or `npm version major` after updating `minAppVersion` manually in `manifest.json`.
-> The command will bump version in `manifest.json` and `package.json`, and add the entry for the new version to `versions.json`
-
-## Adding your plugin to the community plugin list
-
-- Check the [plugin guidelines](https://docs.obsidian.md/Plugins/Releasing/Plugin+guidelines).
-- Publish an initial version.
-- Make sure you have a `README.md` file in the root of your repo.
-- Make a pull request at https://github.com/obsidianmd/obsidian-releases to add your plugin.
-
-## How to use
-
-- Clone this repo.
-- Make sure your NodeJS is at least v16 (`node --version`).
-- `npm i` or `yarn` to install dependencies.
-- `npm run dev` to start compilation in watch mode.
-
-## Manually installing the plugin
-
-- Copy over `main.js`, `styles.css`, `manifest.json` to your vault `VaultFolder/.obsidian/plugins/your-plugin-id/`.
-
-## Improve code quality with eslint
-- [ESLint](https://eslint.org/) is a tool that analyzes your code to quickly find problems. You can run ESLint against your plugin to find common bugs and ways to improve your code. 
-- This project already has eslint preconfigured, you can invoke a check by running`npm run lint`
-- Together with a custom eslint [plugin](https://github.com/obsidianmd/eslint-plugin) for Obsidan specific code guidelines.
-- A GitHub action is preconfigured to automatically lint every commit on all branches.
-
-## Funding URL
-
-You can include funding URLs where people who use your plugin can financially support it.
-
-The simple way is to set the `fundingUrl` field to your link in your `manifest.json` file:
-
-```json
-{
-    "fundingUrl": "https://buymeacoffee.com"
-}
+```bash
+npm install
+npm run dev
 ```
 
-If you have multiple URLs, you can also do:
+Production build:
 
-```json
-{
-    "fundingUrl": {
-        "Buy Me a Coffee": "https://buymeacoffee.com",
-        "GitHub Sponsor": "https://github.com/sponsors",
-        "Patreon": "https://www.patreon.com/"
-    }
-}
+```bash
+npm run build
 ```
 
-## API Documentation
+Lint:
 
-See https://docs.obsidian.md
+```bash
+npm run lint
+```
+
+## Harness
+
+For pipeline testing without adding any developer commands to the Obsidian UI, use the standalone harness:
+
+```bash
+npm run harness -- --from 2024-01-01 --to 2024-01-07 --sources pubmed,europepmc --query cochlea --analyzer mock
+```
+
+What it does:
+- runs the live fetchers
+- deduplicates across sources
+- applies the same keyword filter
+- optionally runs either a mock analyzer, the real `pi` analyzer, or no analyzer
+- writes stage artifacts to an output directory
+
+Artifacts include:
+- `raw-papers.json`
+- `deduped-papers.json`
+- `unseen-papers.json`
+- `matched-papers.json`
+- `scored-papers.json`
+- `newsletter.md`
+- `report.json`
+
+Useful options:
+- `--analyzer mock|pi|none`
+- `--output <dir>`
+- `--seen-file <file>`
+- `--update-seen`
+- `--settings <json-file>`
+
+## Catch-up script
+
+For a one-time historical backfill, use the batch catch-up script:
+
+```bash
+npm run catchup -- --from 2025-12-01 --to 2026-04-13 --batch-days 7 --delay-seconds 60
+```
+
+It runs the harness repeatedly, reuses a shared seen log, records progress in `.harness-output/catchup-progress.json`, and can resume after interruption.
+
+Useful options:
+- `--from <YYYY-MM-DD>`
+- `--to <YYYY-MM-DD>`
+- `--batch-days <N>`
+- `--delay-seconds <N>`
+- `--sources pubmed,biorxiv,europepmc`
+- `--inbox <path>`
+- `--dry-run`
+
+## Manual install
+
+Copy these files into:
+
+```text
+<Vault>/.obsidian/plugins/obsidian-scholar/
+```
+
+Files:
+- `main.js`
+- `manifest.json`
+- `styles.css` (optional)
+
+Then reload Obsidian and enable **Scholar** in **Settings → Community plugins**.
+
+## Notes
+
+- The plugin is desktop-only because it shells out to the `pi` CLI.
+- Automatic startup runs happen at most once per local calendar day.
+- The first automatic run fetches yesterday's papers. Manual runs fetch today and can overwrite today's note.
