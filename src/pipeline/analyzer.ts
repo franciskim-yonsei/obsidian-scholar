@@ -32,7 +32,37 @@ Format:
 ]`;
 }
 
-function buildPrompt(papers: Paper[], subscription: TopicSubscription, offset: number): string {
+function buildAdjacentSystemPrompt(subscriptions: TopicSubscription[]): string {
+	const topicList = subscriptions
+		.map((s) => {
+			const label = s.focus.label.trim();
+			const description = normalizeWhitespace(s.focus.description);
+			return description ? `- "${label}": ${description}` : `- "${label}"`;
+		})
+		.join('\n');
+
+	return `You are an expert scientific literature analyst. A researcher subscribes to the following topics:
+${topicList}
+
+You will be given a list of academic papers that did NOT match any of the above topic subscriptions. Assess whether each paper offers methodological or conceptual value to this researcher — not because it directly addresses their subscribed topics, but because it could:
+- Introduce or demonstrate a technique applicable to their research (e.g., novel sequencing, imaging, genetic, or computational methods)
+- Study an adjacent biological system with transferable insights
+- Offer a conceptual framework or experimental approach that could inform their thinking
+
+For each paper, return:
+- score: integer 0-100 (100 = highly valuable for methodological or conceptual transfer; 0 = no value to this researcher)
+- summary: 2-3 sentence plain-language summary of what the paper reports
+- reason: one sentence explaining the transferable value (or lack thereof)
+
+Respond ONLY with a valid JSON array. No markdown fences and no explanation outside the JSON.
+
+Format:
+[
+  { "id": "<id from input>", "score": 85, "summary": "...", "reason": "..." }
+]`;
+}
+
+function buildPrompt(papers: Paper[], systemPrompt: string, offset: number): string {
 	const payload = papers.map((paper, index) => ({
 		id: getPaperIdentifier(paper, offset + index),
 		title: paper.title,
@@ -41,7 +71,7 @@ function buildPrompt(papers: Paper[], subscription: TopicSubscription, offset: n
 		abstract: paper.abstract.slice(0, 1500),
 	}));
 
-	return `${buildSystemPrompt(subscription)}\n\nPAPERS:\n${JSON.stringify(payload, null, 2)}`;
+	return `${systemPrompt}\n\nPAPERS:\n${JSON.stringify(payload, null, 2)}`;
 }
 
 function clampScore(score: unknown): number {
@@ -259,10 +289,10 @@ function withFallbackAnalyses(papers: Paper[], analyses: AnalyzerResult[], offse
 	return scoredPapers;
 }
 
-export async function analyzeWithPi(
+async function runAnalysisBatches(
 	papers: Paper[],
 	settings: ScholarSettings,
-	subscription: TopicSubscription,
+	systemPrompt: string,
 ): Promise<ScoredPaper[]> {
 	if (papers.length === 0) {
 		return [];
@@ -273,7 +303,7 @@ export async function analyzeWithPi(
 	let offset = 0;
 
 	for (const batch of batches) {
-		const prompt = buildPrompt(batch, subscription, offset);
+		const prompt = buildPrompt(batch, systemPrompt, offset);
 		const output = await runPi(prompt, settings);
 		const analyses = parseAnalyzerResults(output);
 		results.push(...withFallbackAnalyses(batch, analyses, offset));
@@ -281,4 +311,20 @@ export async function analyzeWithPi(
 	}
 
 	return results;
+}
+
+export async function analyzeWithPi(
+	papers: Paper[],
+	settings: ScholarSettings,
+	subscription: TopicSubscription,
+): Promise<ScoredPaper[]> {
+	return runAnalysisBatches(papers, settings, buildSystemPrompt(subscription));
+}
+
+export async function analyzeAdjacentWithPi(
+	papers: Paper[],
+	settings: ScholarSettings,
+	subscriptions: TopicSubscription[],
+): Promise<ScoredPaper[]> {
+	return runAnalysisBatches(papers, settings, buildAdjacentSystemPrompt(subscriptions));
 }
