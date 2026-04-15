@@ -5,7 +5,7 @@ import { DOMParser as XmldomParser } from '@xmldom/xmldom';
 import { analyzeWithPi } from '../pipeline/analyzer';
 import { deduplicateCrossSource } from '../pipeline/deduplicator';
 import { fetchAll } from '../pipeline/fetcher';
-import { applyKeywordFilter, parseQuery } from '../pipeline/keywordFilter';
+import { applyKeywordFilter, collectPositiveTerms, countSatisfiedPositiveClauses, parseQuery } from '../pipeline/keywordFilter';
 import { renderEmptyNewsletter, renderNewsletter } from '../pipeline/render';
 import { getEnabledSubscriptions, mergeSettings } from '../settings-data';
 import { Paper, ScoredPaper, ScholarSettings, SeenEntry, TopicSubscription } from '../types';
@@ -280,17 +280,11 @@ function summarizeText(text: string): string {
 }
 
 function getMockScoringTerms(subscription: TopicSubscription): string[] {
-	const queryTerms: string[] = [];
-	for (const group of parseQuery(subscription.keywordQuery)) {
-		for (const term of group) {
-			const normalized = normalizeWhitespace(term).toLowerCase();
-			if (normalized.length > 1) {
-				queryTerms.push(normalized);
-			}
-		}
-	}
+	const queryTerms = collectPositiveTerms(parseQuery(subscription.keywordQuery))
+		.map((term) => normalizeWhitespace(term).toLowerCase())
+		.filter((term) => term.length > 1);
 	if (queryTerms.length > 0) {
-		return [...new Set(queryTerms)];
+		return queryTerms;
 	}
 
 	const fallbackTerms = normalizeWhitespace(`${subscription.focus.label} ${subscription.focus.description}`)
@@ -314,11 +308,10 @@ function scorePaper(paper: Paper, subscription: TopicSubscription): { score: num
 	const terms = getMockScoringTerms(subscription);
 	const titleHaystack = paper.title.toLowerCase();
 	const abstractHaystack = paper.abstract.toLowerCase();
-	const fullHaystack = `${titleHaystack} ${abstractHaystack}`;
-	const matchedGroups = parsedQuery.filter((group) => group.some((term) => fullHaystack.includes(term.toLowerCase()))).length;
+	const matchedClauses = countSatisfiedPositiveClauses(paper, parsedQuery);
 	const titleMatches = countMatchedTerms(titleHaystack, terms);
 	const abstractMatches = countMatchedTerms(abstractHaystack, terms);
-	const score = Math.min(100, matchedGroups * 28 + titleMatches * 10 + abstractMatches * 4 + (paper.source === 'pubmed' ? 4 : 0));
+	const score = Math.min(100, matchedClauses * 28 + titleMatches * 10 + abstractMatches * 4 + (paper.source === 'pubmed' ? 4 : 0));
 
 	if (score >= 75) {
 		return { score, reason: 'Several configured focus terms matched strongly, including prominent matches in the title or abstract.' };

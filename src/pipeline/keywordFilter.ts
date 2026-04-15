@@ -1,108 +1,343 @@
 import { Paper } from '../types';
 import { normalizeWhitespace } from '../utils/strings';
 
-function splitTopLevel(value: string, operator: 'AND' | 'OR'): string[] {
-	const parts: string[] = [];
-	let current = '';
-	let depth = 0;
+interface QueryToken {
+	type: 'term' | 'and' | 'or' | 'not' | 'lparen' | 'rparen';
+	value?: string;
+}
+
+export type QueryNode =
+	| { type: 'term'; value: string }
+	| { type: 'and'; children: QueryNode[] }
+	| { type: 'or'; children: QueryNode[] }
+	| { type: 'not'; child: QueryNode };
+
+function trimOuterQuotes(value: string): string {
+	return value.replace(/^"|"$/g, '');
+}
+
+function cleanTerm(term: string): string {
+	return normalizeWhitespace(trimOuterQuotes(term).replace(/\[[^\]]+\]/g, ''));
+}
+
+function scanSimpleParenthesizedTerm(query: string, start: number): { value: string; end: number } | null {
+	if (query[start] !== '(') {
+		return null;
+	}
+
+	let content = '';
+	let index = start + 1;
 	let inQuote = false;
-	let index = 0;
 
-	while (index < value.length) {
-		const character = value[index];
-
+	while (index < query.length) {
+		const character = query[index];
 		if (character === '"') {
 			inQuote = !inQuote;
-			current += character;
+			content += character;
 			index += 1;
 			continue;
 		}
 
-		if (!inQuote) {
-			if (character === '(') {
-				depth += 1;
-			} else if (character === ')' && depth > 0) {
-				depth -= 1;
-			}
-
-			const remainder = value.slice(index);
-			const operatorMatch = remainder.match(new RegExp(`^\\s+${operator}\\s+`, 'i'));
-			if (depth === 0 && operatorMatch) {
-				parts.push(current.trim());
-				current = '';
-				index += operatorMatch[0].length;
-				continue;
-			}
+		if (!inQuote && character === '(') {
+			return null;
 		}
 
-		current += character;
+		if (!inQuote && character === ')') {
+			const normalized = normalizeWhitespace(content);
+			if (!normalized || /\b(?:AND|OR|NOT)\b/i.test(normalized)) {
+				return null;
+			}
+
+			const cleaned = cleanTerm(content);
+			if (!cleaned) {
+				return null;
+			}
+
+			return {
+				value: cleaned,
+				end: index + 1,
+			};
+		}
+
+		content += character;
 		index += 1;
 	}
 
-	if (current.trim().length > 0) {
-		parts.push(current.trim());
-	}
-
-	return parts;
+	return null;
 }
 
-function trimOuterParens(value: string): string {
-	let trimmed = value.trim();
+function scanQuotedTerm(query: string, start: number): { raw: string; end: number } {
+	let index = start + 1;
+	while (index < query.length && query[index] !== '"') {
+		index += 1;
+	}
+	if (index < query.length && query[index] === '"') {
+		index += 1;
+	}
 
-	while (trimmed.startsWith('(') && trimmed.endsWith(')')) {
-		let depth = 0;
-		let enclosesWholeString = true;
-		for (let index = 0; index < trimmed.length; index += 1) {
-			const character = trimmed[index];
-			if (character === '(') {
-				depth += 1;
-			} else if (character === ')') {
-				depth -= 1;
-				if (depth === 0 && index < trimmed.length - 1) {
-					enclosesWholeString = false;
-					break;
-				}
+	while (index < query.length && query[index] === '[') {
+		index += 1;
+		while (index < query.length && query[index] !== ']') {
+			index += 1;
+		}
+		if (index < query.length && query[index] === ']') {
+			index += 1;
+		}
+	}
+
+	return {
+		raw: query.slice(start, index),
+		end: index,
+	};
+}
+
+function tokenize(query: string): QueryToken[] {
+	const tokens: QueryToken[] = [];
+	let index = 0;
+
+	while (index < query.length) {
+		const character = query[index] ?? '';
+		if (/\s/.test(character)) {
+			index += 1;
+			continue;
+		}
+
+		if (character === '(') {
+			const simple = scanSimpleParenthesizedTerm(query, index);
+			if (simple) {
+				tokens.push({ type: 'term', value: simple.value });
+				index = simple.end;
+				continue;
+			}
+			tokens.push({ type: 'lparen' });
+			index += 1;
+			continue;
+		}
+
+		if (character === ')') {
+			tokens.push({ type: 'rparen' });
+			index += 1;
+			continue;
+		}
+
+		if (character === '"') {
+			const quoted = scanQuotedTerm(query, index);
+			const cleaned = cleanTerm(quoted.raw);
+			if (cleaned) {
+				tokens.push({ type: 'term', value: cleaned });
+			}
+			index = quoted.end;
+			continue;
+		}
+
+		let end = index;
+		while (end < query.length && !/[\s()]/.test(query[end] ?? '')) {
+			end += 1;
+		}
+
+		const raw = query.slice(index, end);
+		if (/^AND$/i.test(raw)) {
+			tokens.push({ type: 'and' });
+		} else if (/^OR$/i.test(raw)) {
+			tokens.push({ type: 'or' });
+		} else if (/^NOT$/i.test(raw)) {
+			tokens.push({ type: 'not' });
+		} else {
+			const cleaned = cleanTerm(raw);
+			if (cleaned) {
+				tokens.push({ type: 'term', value: cleaned });
 			}
 		}
 
-		if (!enclosesWholeString) {
+		index = end;
+	}
+
+	return tokens;
+}
+
+function collapseNode(type: 'and' | 'or', children: QueryNode[]): QueryNode {
+	return children.length === 1 ? children[0]! : { type, children };
+}
+
+function isUnaryStart(token?: QueryToken): boolean {
+	return token?.type === 'term' || token?.type === 'lparen' || token?.type === 'not';
+}
+
+export function parseQuery(query: string): QueryNode | null {
+	const normalized = normalizeWhitespace(query);
+	if (!normalized) {
+		return null;
+	}
+
+	const tokens = tokenize(normalized);
+	if (tokens.length === 0) {
+		return null;
+	}
+
+	let index = 0;
+
+	function peek(): QueryToken | undefined {
+		return tokens[index];
+	}
+
+	function parsePrimary(): QueryNode | null {
+		const token = peek();
+		if (!token) {
+			return null;
+		}
+
+		if (token.type === 'term') {
+			index += 1;
+			return {
+				type: 'term',
+				value: token.value ?? '',
+			};
+		}
+
+		if (token.type === 'lparen') {
+			index += 1;
+			const expression = parseOr();
+			if (peek()?.type === 'rparen') {
+				index += 1;
+			}
+			return expression;
+		}
+
+		return null;
+	}
+
+	function parseUnary(): QueryNode | null {
+		const token = peek();
+		if (token?.type === 'not') {
+			index += 1;
+			const child = parseUnary();
+			return child ? { type: 'not', child } : null;
+		}
+
+		return parsePrimary();
+	}
+
+	function parseAnd(): QueryNode | null {
+		const first = parseUnary();
+		if (!first) {
+			return null;
+		}
+
+		const children: QueryNode[] = [first];
+		while (true) {
+			const token = peek();
+			if (token?.type === 'and') {
+				index += 1;
+				const next = parseUnary();
+				if (next) {
+					children.push(next);
+				}
+				continue;
+			}
+
+			if (isUnaryStart(token)) {
+				const next = parseUnary();
+				if (next) {
+					children.push(next);
+					continue;
+				}
+			}
+
 			break;
 		}
 
-		trimmed = trimmed.slice(1, -1).trim();
+		return collapseNode('and', children);
 	}
 
-	return trimmed;
+	function parseOr(): QueryNode | null {
+		const first = parseAnd();
+		if (!first) {
+			return null;
+		}
+
+		const children: QueryNode[] = [first];
+		while (peek()?.type === 'or') {
+			index += 1;
+			const next = parseAnd();
+			if (next) {
+				children.push(next);
+			}
+		}
+
+		return collapseNode('or', children);
+	}
+
+	return parseOr();
 }
 
-function cleanTerm(term: string): string {
-	return normalizeWhitespace(
-		trimOuterParens(term)
-			.replace(/^"|"$/g, '')
-			.replace(/\[[^\]]+\]/g, '')
-	);
+function evaluateQuery(node: QueryNode, haystack: string): boolean {
+	switch (node.type) {
+		case 'term':
+			return haystack.includes(node.value.toLowerCase());
+		case 'and':
+			return node.children.every((child) => evaluateQuery(child, haystack));
+		case 'or':
+			return node.children.some((child) => evaluateQuery(child, haystack));
+		case 'not':
+			return !evaluateQuery(node.child, haystack);
+	}
 }
 
-export function parseQuery(query: string): string[][] {
-	const normalized = normalizeWhitespace(query);
-	if (!normalized) {
+function collectTerms(node: QueryNode, includeNegated: boolean): string[] {
+	switch (node.type) {
+		case 'term':
+			return [node.value];
+		case 'and':
+		case 'or': {
+			const terms: string[] = [];
+			for (const child of node.children) {
+				terms.push(...collectTerms(child, includeNegated));
+			}
+			return terms;
+		}
+		case 'not':
+			return includeNegated ? collectTerms(node.child, includeNegated) : [];
+	}
+}
+
+function getPositiveClauses(node: QueryNode | null): QueryNode[] {
+	if (!node) {
 		return [];
 	}
 
-	return splitTopLevel(normalized, 'AND')
-		.map((group) => splitTopLevel(trimOuterParens(group), 'OR').map(cleanTerm).filter(Boolean))
-		.filter((group) => group.length > 0);
+	if (node.type === 'and') {
+		return node.children.filter((child) => child.type !== 'not');
+	}
+	if (node.type === 'not') {
+		return [];
+	}
+	return [node];
 }
 
-export function matchesPaper(paper: Paper, parsedQuery: string[][]): boolean {
-	if (parsedQuery.length === 0) {
+export function collectPositiveTerms(parsedQuery: QueryNode | null): string[] {
+	if (!parsedQuery) {
+		return [];
+	}
+
+	return [...new Set(collectTerms(parsedQuery, false).map((term) => term.toLowerCase()))];
+}
+
+export function countSatisfiedPositiveClauses(paper: Paper, parsedQuery: QueryNode | null): number {
+	if (!parsedQuery) {
+		return 0;
+	}
+
+	const haystack = `${paper.title} ${paper.abstract}`.toLowerCase();
+	return getPositiveClauses(parsedQuery).filter((clause) => evaluateQuery(clause, haystack)).length;
+}
+
+export function matchesPaper(paper: Paper, parsedQuery: QueryNode | null): boolean {
+	if (!parsedQuery) {
 		return true;
 	}
 
 	const haystack = `${paper.title} ${paper.abstract}`.toLowerCase();
-	return parsedQuery.every((orGroup) =>
-		orGroup.some((term) => haystack.includes(term.toLowerCase())),
-	);
+	return evaluateQuery(parsedQuery, haystack);
 }
 
 export function applyKeywordFilter(papers: Paper[], query: string): Paper[] {

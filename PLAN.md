@@ -77,7 +77,7 @@ src/
 - Cross-source deduplication
 - Multiple topic subscriptions with per-topic query, analyzer guidance, PubMed supplement, and seen log, merged into one daily newsletter
 - Seen-log persistence in `.scholar/seen/<subscription-id>.json` with legacy fallback from `.scholar/seen.json`
-- Local boolean keyword filtering (`AND`, `OR`, quoted phrases, simple grouping)
+- Local boolean keyword filtering (`AND`, `OR`, `NOT`, quoted phrases, simple grouping)
 - `pi`-based scoring and summarization in batches
 - Single daily newsletter note generation in the configured inbox folder with per-topic sections
 
