@@ -4,7 +4,7 @@ import { buildSeenSet, getPaperKeys, loadSeenLog, saveSeenLog } from '../utils/s
 import { analyzeWithPi } from './analyzer';
 import { deduplicateCrossSource } from './deduplicator';
 import { fetchAll } from './fetcher';
-import { applyKeywordFilter } from './keywordFilter';
+import { applyKeywordFilter, matchesPaper, parseQuery } from './keywordFilter';
 
 function buildSeenEntries(papers: Paper[], dateSeen: string): SeenEntry[] {
 	return papers.map((paper) => ({
@@ -61,6 +61,7 @@ export async function runPipelineForDateRange(
 		return {
 			subscription,
 			scored: [],
+			rejectedPapers: [],
 			totalFetched: rawPapers.length,
 			totalDeduped: deduplicatedPapers.length,
 			totalNew: 0,
@@ -75,6 +76,7 @@ export async function runPipelineForDateRange(
 		return {
 			subscription,
 			scored: [],
+			rejectedPapers: newPapers,
 			totalFetched: rawPapers.length,
 			totalDeduped: deduplicatedPapers.length,
 			totalNew: newPapers.length,
@@ -84,12 +86,16 @@ export async function runPipelineForDateRange(
 		};
 	}
 
+	const coreParsed = parseQuery(subscription.keywordQuery);
+	const rejectedPapers = newPapers.filter((paper) => !matchesPaper(paper, coreParsed));
+
 	const scoredPapers = await analyzeWithPi(filteredPapers, settings, subscription);
 	scoredPapers.sort((left, right) => right.score - left.score);
 
 	return {
 		subscription,
 		scored: scoredPapers,
+		rejectedPapers,
 		totalFetched: rawPapers.length,
 		totalDeduped: deduplicatedPapers.length,
 		totalNew: newPapers.length,
