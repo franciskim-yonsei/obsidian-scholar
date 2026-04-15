@@ -4,6 +4,7 @@ import type ScholarPlugin from './main';
 import {
 	clampThresholds,
 	createTopicSubscription,
+	DEFAULT_ADJACENT_QUERY,
 	DEFAULT_FOCUS_DESCRIPTION,
 	DEFAULT_FOCUS_LABEL,
 	DEFAULT_KEYWORD_QUERY,
@@ -273,6 +274,24 @@ export class ScholarSettingTab extends PluginSettingTab {
 					await this.persist();
 				});
 				return dropdown;
+			});
+
+		new Setting(containerEl).setName('Adjacent science').setHeading();
+		new Setting(containerEl)
+			.setName('Adjacent interest query')
+			.setDesc(
+				'Keyword filter applied to papers fetched by your subscriptions that did not match any topic. Papers passing this filter are scored for methodological or conceptual relevance and shown in the "Adjacent science" section at the end of the newsletter. Leave blank to disable.',
+			)
+			.addTextArea((text) => {
+				text.setPlaceholder(DEFAULT_ADJACENT_QUERY);
+				text.setValue(this.plugin.settings.adjacentQuery);
+				text.inputEl.rows = 6;
+				text.inputEl.cols = 60;
+				text.onChange(async (value) => {
+					this.plugin.settings.adjacentQuery = value.trim();
+					await this.persist();
+				});
+				return text;
 			});
 
 		new Setting(containerEl).setName('Optional API keys').setHeading();
