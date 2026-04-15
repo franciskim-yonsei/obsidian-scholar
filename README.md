@@ -6,7 +6,7 @@ It ships with an inner-ear-development profile by default, but you can now keep 
 
 It can:
 - fetch papers from PubMed, bioRxiv, and Europe PMC
-- filter them with configurable per-topic boolean keyword queries
+- filter them with configurable per-topic boolean keyword queries, including exclusions and tags like `[title]`
 - score and summarize them with the `pi` CLI
 - write a dated markdown digest into your chosen folder
 - keep a seen log so newly discovered papers are not reprocessed every day

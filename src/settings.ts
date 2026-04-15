@@ -72,7 +72,7 @@ export class ScholarSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName('Keyword query')
-			.setDesc('Primary query used for API search and local title plus abstract filtering. Supports AND, OR, NOT, quoted phrases, and grouping. If left blank, source searches fall back to the topic label.')
+			.setDesc('Primary query used for API search and local title plus abstract filtering. Supports AND, OR, NOT, quoted phrases, grouping, and tags like [title]. If left blank, source searches fall back to the topic label.')
 			.addTextArea((text) => {
 				text.setPlaceholder(index === 0 ? DEFAULT_KEYWORD_QUERY : subscription.focus.label || 'Topic query');
 				text.setValue(subscription.keywordQuery);

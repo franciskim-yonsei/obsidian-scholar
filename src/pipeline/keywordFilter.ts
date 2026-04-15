@@ -1,13 +1,16 @@
 import { Paper } from '../types';
 import { normalizeWhitespace } from '../utils/strings';
 
+type QueryField = 'all' | 'title';
+
 interface QueryToken {
 	type: 'term' | 'and' | 'or' | 'not' | 'lparen' | 'rparen';
 	value?: string;
+	field?: QueryField;
 }
 
 export type QueryNode =
-	| { type: 'term'; value: string }
+	| { type: 'term'; value: string; field: QueryField }
 	| { type: 'and'; children: QueryNode[] }
 	| { type: 'or'; children: QueryNode[] }
 	| { type: 'not'; child: QueryNode };
@@ -16,12 +19,27 @@ function trimOuterQuotes(value: string): string {
 	return value.replace(/^"|"$/g, '');
 }
 
-function cleanTerm(term: string): string {
-	return normalizeWhitespace(trimOuterQuotes(term).replace(/\[[^\]]+\]/g, ''));
+function getFieldFromRawTerm(raw: string): QueryField {
+	const fields = [...raw.matchAll(/\[([^\]]+)\]/g)]
+		.map((match) => (match[1] ?? '').trim().toLowerCase())
+		.filter(Boolean);
+	return fields.some((field) => field === 'title' || field === 'ti') ? 'title' : 'all';
 }
 
-function scanSimpleParenthesizedTerm(query: string, start: number): { value: string; end: number } | null {
-	if (query[start] !== '(') {
+function parseTerm(raw: string): { value: string; field: QueryField } | null {
+	const value = normalizeWhitespace(trimOuterQuotes(raw).replace(/\[[^\]]+\]/g, ''));
+	if (!value) {
+		return null;
+	}
+
+	return {
+		value,
+		field: getFieldFromRawTerm(raw),
+	};
+}
+
+function scanSimpleParenthesizedTerm(query: string, start: number): { value: string; field: QueryField; end: number } | null {
+	if ((query[start] ?? '') !== '(') {
 		return null;
 	}
 
@@ -30,7 +48,7 @@ function scanSimpleParenthesizedTerm(query: string, start: number): { value: str
 	let inQuote = false;
 
 	while (index < query.length) {
-		const character = query[index];
+		const character = query[index] ?? '';
 		if (character === '"') {
 			inQuote = !inQuote;
 			content += character;
@@ -48,13 +66,13 @@ function scanSimpleParenthesizedTerm(query: string, start: number): { value: str
 				return null;
 			}
 
-			const cleaned = cleanTerm(content);
-			if (!cleaned) {
+			const parsed = parseTerm(content);
+			if (!parsed) {
 				return null;
 			}
 
 			return {
-				value: cleaned,
+				...parsed,
 				end: index + 1,
 			};
 		}
@@ -68,19 +86,19 @@ function scanSimpleParenthesizedTerm(query: string, start: number): { value: str
 
 function scanQuotedTerm(query: string, start: number): { raw: string; end: number } {
 	let index = start + 1;
-	while (index < query.length && query[index] !== '"') {
+	while (index < query.length && (query[index] ?? '') !== '"') {
 		index += 1;
 	}
-	if (index < query.length && query[index] === '"') {
+	if (index < query.length && (query[index] ?? '') === '"') {
 		index += 1;
 	}
 
-	while (index < query.length && query[index] === '[') {
+	while (index < query.length && (query[index] ?? '') === '[') {
 		index += 1;
-		while (index < query.length && query[index] !== ']') {
+		while (index < query.length && (query[index] ?? '') !== ']') {
 			index += 1;
 		}
-		if (index < query.length && query[index] === ']') {
+		if (index < query.length && (query[index] ?? '') === ']') {
 			index += 1;
 		}
 	}
@@ -105,7 +123,7 @@ function tokenize(query: string): QueryToken[] {
 		if (character === '(') {
 			const simple = scanSimpleParenthesizedTerm(query, index);
 			if (simple) {
-				tokens.push({ type: 'term', value: simple.value });
+				tokens.push({ type: 'term', value: simple.value, field: simple.field });
 				index = simple.end;
 				continue;
 			}
@@ -122,9 +140,9 @@ function tokenize(query: string): QueryToken[] {
 
 		if (character === '"') {
 			const quoted = scanQuotedTerm(query, index);
-			const cleaned = cleanTerm(quoted.raw);
-			if (cleaned) {
-				tokens.push({ type: 'term', value: cleaned });
+			const parsed = parseTerm(quoted.raw);
+			if (parsed) {
+				tokens.push({ type: 'term', value: parsed.value, field: parsed.field });
 			}
 			index = quoted.end;
 			continue;
@@ -143,9 +161,9 @@ function tokenize(query: string): QueryToken[] {
 		} else if (/^NOT$/i.test(raw)) {
 			tokens.push({ type: 'not' });
 		} else {
-			const cleaned = cleanTerm(raw);
-			if (cleaned) {
-				tokens.push({ type: 'term', value: cleaned });
+			const parsed = parseTerm(raw);
+			if (parsed) {
+				tokens.push({ type: 'term', value: parsed.value, field: parsed.field });
 			}
 		}
 
@@ -191,6 +209,7 @@ export function parseQuery(query: string): QueryNode | null {
 			return {
 				type: 'term',
 				value: token.value ?? '',
+				field: token.field ?? 'all',
 			};
 		}
 
@@ -270,16 +289,22 @@ export function parseQuery(query: string): QueryNode | null {
 	return parseOr();
 }
 
-function evaluateQuery(node: QueryNode, haystack: string): boolean {
+function getHaystack(paper: Paper, field: QueryField): string {
+	return field === 'title'
+		? paper.title.toLowerCase()
+		: `${paper.title} ${paper.abstract}`.toLowerCase();
+}
+
+function evaluateQuery(node: QueryNode, paper: Paper): boolean {
 	switch (node.type) {
 		case 'term':
-			return haystack.includes(node.value.toLowerCase());
+			return getHaystack(paper, node.field).includes(node.value.toLowerCase());
 		case 'and':
-			return node.children.every((child) => evaluateQuery(child, haystack));
+			return node.children.every((child) => evaluateQuery(child, paper));
 		case 'or':
-			return node.children.some((child) => evaluateQuery(child, haystack));
+			return node.children.some((child) => evaluateQuery(child, paper));
 		case 'not':
-			return !evaluateQuery(node.child, haystack);
+			return !evaluateQuery(node.child, paper);
 	}
 }
 
@@ -327,8 +352,7 @@ export function countSatisfiedPositiveClauses(paper: Paper, parsedQuery: QueryNo
 		return 0;
 	}
 
-	const haystack = `${paper.title} ${paper.abstract}`.toLowerCase();
-	return getPositiveClauses(parsedQuery).filter((clause) => evaluateQuery(clause, haystack)).length;
+	return getPositiveClauses(parsedQuery).filter((clause) => evaluateQuery(clause, paper)).length;
 }
 
 export function matchesPaper(paper: Paper, parsedQuery: QueryNode | null): boolean {
@@ -336,8 +360,7 @@ export function matchesPaper(paper: Paper, parsedQuery: QueryNode | null): boole
 		return true;
 	}
 
-	const haystack = `${paper.title} ${paper.abstract}`.toLowerCase();
-	return evaluateQuery(parsedQuery, haystack);
+	return evaluateQuery(parsedQuery, paper);
 }
 
 export function applyKeywordFilter(papers: Paper[], query: string): Paper[] {
