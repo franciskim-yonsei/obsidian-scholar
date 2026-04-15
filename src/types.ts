@@ -50,6 +50,7 @@ export interface ScholarSettings {
 	inboxFolder: string;
 	runOnStartup: boolean;
 	subscriptions: TopicSubscription[];
+	adjacentQuery: string;
 	sources: {
 		pubmed: boolean;
 		biorxiv: boolean;
@@ -77,6 +78,7 @@ export interface PluginData {
 export interface TopicRunResult {
 	subscription: TopicSubscription;
 	scored: ScoredPaper[];
+	rejectedPapers: Paper[];
 	totalFetched: number;
 	totalDeduped: number;
 	totalNew: number;

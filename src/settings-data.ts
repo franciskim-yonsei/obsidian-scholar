@@ -18,6 +18,7 @@ export const DEFAULT_FOCUS_LABEL = 'inner ear development';
 export const DEFAULT_FOCUS_DESCRIPTION = 'cochlea, vestibular system, hair cells, spiral ganglion, otic vesicle, auditory and vestibular progenitors, sensory epithelium development, differentiation, and regeneration';
 export const DEFAULT_PUBMED_QUERY_SUPPLEMENT = '"Ear, Inner/growth and development"[MeSH] OR "Hair Cells, Auditory"[MeSH]';
 export const DEFAULT_SUBSCRIPTION_ID = 'default';
+export const DEFAULT_ADJACENT_QUERY = `(single-cell OR scRNA-seq OR multiomics OR "spatial transcriptomics" OR "single-cell ATAC" OR organoid OR "craniofacial development" OR "cell fate" OR "chromatin accessibility" OR "gene regulation" OR "developmental biology" OR "mouse embryo" OR transcriptomics OR epigenomics) AND (development OR differentiation OR sequencing OR morphogenesis OR specification)`;
 
 export function getDefaultPiPath(): string {
 	return process.platform === 'win32' ? 'pi.cmd' : 'pi';
@@ -38,6 +39,7 @@ export const DEFAULT_SETTINGS: ScholarSettings = {
 	inboxFolder: 'Inbox',
 	runOnStartup: true,
 	subscriptions: [DEFAULT_SUBSCRIPTION],
+	adjacentQuery: DEFAULT_ADJACENT_QUERY,
 	sources: {
 		pubmed: true,
 		biorxiv: false,
@@ -170,6 +172,7 @@ export function mergeSettings(saved?: LegacyScholarSettings): ScholarSettings {
 		inboxFolder: saved?.inboxFolder ?? DEFAULT_SETTINGS.inboxFolder,
 		runOnStartup: saved?.runOnStartup ?? DEFAULT_SETTINGS.runOnStartup,
 		subscriptions: getMergedSubscriptions(saved),
+		adjacentQuery: saved?.adjacentQuery ?? DEFAULT_SETTINGS.adjacentQuery,
 		sources: {
 			pubmed: saved?.sources?.pubmed ?? DEFAULT_SETTINGS.sources.pubmed,
 			biorxiv: saved?.sources?.biorxiv ?? DEFAULT_SETTINGS.sources.biorxiv,
