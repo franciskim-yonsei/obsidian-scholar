@@ -1,20 +1,6 @@
 import { spawn } from 'child_process';
-import { AnalyzerResult, Paper, ScoredPaper, ScholarSettings } from '../types';
+import { AnalyzerResult, Paper, ScoredPaper, ScholarSettings, TopicSubscription } from '../types';
 import { getErrorMessage, getPaperIdentifier, normalizeWhitespace } from '../utils/strings';
-
-const SYSTEM_PROMPT = `You are an expert in inner ear biology. You will be given a list of academic papers and must assess their relevance to the research topic: "inner ear development" (cochlea, vestibular system, hair cells, spiral ganglion, otic vesicle, auditory and vestibular progenitors, sensory epithelium development, differentiation, and regeneration).
-
-For each paper, return:
-- score: integer 0-100 (100 = directly about inner ear development; 0 = completely unrelated)
-- summary: 2-3 sentence plain-language summary of what the paper reports
-- reason: one sentence explaining the score
-
-Respond ONLY with a valid JSON array. No markdown fences and no explanation outside the JSON.
-
-Format:
-[
-  { "id": "<id from input>", "score": 85, "summary": "...", "reason": "..." }
-]`;
 
 const MAX_PAPERS_PER_BATCH = 50;
 const ANALYZER_TIMEOUT_MS = 10 * 60 * 1000;
@@ -27,7 +13,26 @@ function chunk<T>(items: T[], size: number): T[][] {
 	return chunks;
 }
 
-function buildPrompt(papers: Paper[], offset: number): string {
+function buildSystemPrompt(subscription: TopicSubscription): string {
+	const focusLabel = subscription.focus.label.trim();
+	const focusDescription = normalizeWhitespace(subscription.focus.description);
+
+	return `You are an expert scientific literature analyst. You will be given a list of academic papers and must assess their relevance to the research topic: "${focusLabel}".${focusDescription ? `\n\nTopic guidance:\n- ${focusDescription}` : ''}
+
+For each paper, return:
+- score: integer 0-100 (100 = directly about the stated research focus; 0 = completely unrelated)
+- summary: 2-3 sentence plain-language summary of what the paper reports
+- reason: one sentence explaining the score
+
+Respond ONLY with a valid JSON array. No markdown fences and no explanation outside the JSON.
+
+Format:
+[
+  { "id": "<id from input>", "score": 85, "summary": "...", "reason": "..." }
+]`;
+}
+
+function buildPrompt(papers: Paper[], subscription: TopicSubscription, offset: number): string {
 	const payload = papers.map((paper, index) => ({
 		id: getPaperIdentifier(paper, offset + index),
 		title: paper.title,
@@ -36,7 +41,7 @@ function buildPrompt(papers: Paper[], offset: number): string {
 		abstract: paper.abstract.slice(0, 1500),
 	}));
 
-	return `${SYSTEM_PROMPT}\n\nPAPERS:\n${JSON.stringify(payload, null, 2)}`;
+	return `${buildSystemPrompt(subscription)}\n\nPAPERS:\n${JSON.stringify(payload, null, 2)}`;
 }
 
 function clampScore(score: unknown): number {
@@ -96,27 +101,50 @@ function parseAnalyzerResults(output: string): AnalyzerResult[] {
 function getPiCandidates(piPath: string): string[] {
 	const trimmed = piPath.trim() || 'pi';
 	const candidates = [trimmed];
-	if (process.platform === 'win32' && !trimmed.toLowerCase().endsWith('.cmd')) {
+	if (process.platform === 'win32' && !/[.]cmd$/i.test(trimmed)) {
 		candidates.push(`${trimmed}.cmd`);
 	}
 	return [...new Set(candidates)];
 }
 
+function quoteWindowsCmdArg(value: string): string {
+	if (value.length === 0) {
+		return '""';
+	}
+
+	const escaped = value.replace(/(["^&|<>()%!])/g, '^$1');
+	return /[\s"^&|<>()%!]/.test(value) ? `"${escaped}"` : escaped;
+}
+
+function buildSpawnSpec(command: string, args: string): { spawnCmd: string; spawnArgs: string[] };
+function buildSpawnSpec(command: string, args: string[]): { spawnCmd: string; spawnArgs: string[] };
+function buildSpawnSpec(command: string, args: string | string[]): { spawnCmd: string; spawnArgs: string[] } {
+	if (process.platform !== 'win32') {
+		return {
+			spawnCmd: command,
+			spawnArgs: Array.isArray(args) ? args : [args],
+		};
+	}
+
+	const commandArgs = Array.isArray(args) ? args : [args];
+	if (command.toLowerCase().endsWith('.exe')) {
+		return {
+			spawnCmd: command,
+			spawnArgs: commandArgs,
+		};
+	}
+
+	const commandLine = [command, ...commandArgs].map(quoteWindowsCmdArg).join(' ');
+	return {
+		spawnCmd: 'cmd.exe',
+		spawnArgs: ['/d', '/s', '/c', `"${commandLine}"`],
+	};
+}
+
 function runPiCommand(command: string, prompt: string, settings: ScholarSettings): Promise<string> {
 	return new Promise((resolve, reject) => {
-		// Pipe the prompt via stdin rather than writing to a temp file.
-		// This avoids Windows path mangling that occurred when @C:\... paths were
-		// passed through cmd.exe with shell:true, and avoids the stdin-open hang
-		// that caused prior timeouts.
-		//
-		// On Windows, .cmd files require cmd.exe to execute. We invoke cmd.exe
-		// directly with shell:false to avoid the Node.js DEP0190 deprecation that
-		// fires when args are passed alongside shell:true.
 		const piArgs = ['--model', settings.llm.model, '--thinking', settings.llm.thinkingLevel, '--no-tools', '--no-session', '--print'];
-		const [spawnCmd, spawnArgs] = process.platform === 'win32'
-			? ['cmd.exe', ['/d', '/s', '/c', [command, ...piArgs].join(' ')]]
-			: [command, piArgs];
-
+		const { spawnCmd, spawnArgs } = buildSpawnSpec(command, piArgs);
 		const child = spawn(spawnCmd, spawnArgs, {
 			shell: false,
 			windowsHide: true,
@@ -135,10 +163,6 @@ function runPiCommand(command: string, prompt: string, settings: ScholarSettings
 			child.kill();
 			reject(new Error(`pi CLI timed out after ${ANALYZER_TIMEOUT_MS / 1000}s.\nstderr: ${stderr.trim()}`));
 		}, ANALYZER_TIMEOUT_MS);
-
-		// Send the prompt and close stdin so pi knows input is complete.
-		child.stdin.write(prompt, 'utf8');
-		child.stdin.end();
 
 		child.stdout.on('data', (chunk: Buffer | string) => {
 			stdout += chunk.toString();
@@ -166,6 +190,18 @@ function runPiCommand(command: string, prompt: string, settings: ScholarSettings
 			}
 			resolve(stdout);
 		});
+
+		try {
+			child.stdin.write(prompt, 'utf8');
+			child.stdin.end();
+		} catch (error) {
+			if (settled) {
+				return;
+			}
+			settled = true;
+			globalThis.clearTimeout(timeout);
+			reject(error instanceof Error ? error : new Error(String(error)));
+		}
 	});
 }
 
@@ -223,7 +259,11 @@ function withFallbackAnalyses(papers: Paper[], analyses: AnalyzerResult[], offse
 	return scoredPapers;
 }
 
-export async function analyzeWithPi(papers: Paper[], settings: ScholarSettings): Promise<ScoredPaper[]> {
+export async function analyzeWithPi(
+	papers: Paper[],
+	settings: ScholarSettings,
+	subscription: TopicSubscription,
+): Promise<ScoredPaper[]> {
 	if (papers.length === 0) {
 		return [];
 	}
@@ -233,7 +273,7 @@ export async function analyzeWithPi(papers: Paper[], settings: ScholarSettings):
 	let offset = 0;
 
 	for (const batch of batches) {
-		const prompt = buildPrompt(batch, offset);
+		const prompt = buildPrompt(batch, subscription, offset);
 		const output = await runPi(prompt, settings);
 		const analyses = parseAnalyzerResults(output);
 		results.push(...withFallbackAnalyses(batch, analyses, offset));

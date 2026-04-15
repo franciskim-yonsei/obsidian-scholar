@@ -1,4 +1,4 @@
-import { Paper, ScholarSettings } from '../../types';
+import { Paper, ScholarSettings, TopicSubscription } from '../../types';
 import { fetchJson } from '../../utils/network';
 import { cleanAbstractText, normalizeWhitespace, splitAuthorString } from '../../utils/strings';
 
@@ -37,9 +37,15 @@ function buildEuropePmcUrl(query: string, cursorMark: string): string {
 	return url.toString();
 }
 
-export async function fetchEuropePmc(settings: ScholarSettings, from: string, to: string): Promise<Paper[]> {
+export async function fetchEuropePmc(
+	_settings: ScholarSettings,
+	subscription: TopicSubscription,
+	from: string,
+	to: string,
+): Promise<Paper[]> {
 	const papers: Paper[] = [];
-	const query = `(${settings.keywordQuery}) AND (FIRST_PDATE:[${from} TO ${to}])`;
+	const searchTerms = subscription.keywordQuery.trim() || subscription.focus.label.trim();
+	const query = `(${searchTerms}) AND (FIRST_PDATE:[${from} TO ${to}])`;
 	let cursorMark = '*';
 
 	for (;;) {

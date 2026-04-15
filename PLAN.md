@@ -5,7 +5,7 @@
 The original plan was solid, but I tightened a few details before building:
 
 1. **Deep-merge saved settings**
-   - Nested settings objects (`sources`, `thresholds`, `llm`) now merge safely with defaults.
+   - Nested settings objects (`focus`, `sources`, `thresholds`, `llm`) now merge safely with defaults.
    - This avoids partially saved configs wiping sibling defaults.
 
 2. **Fix the date-range edge case**
@@ -24,12 +24,20 @@ The original plan was solid, but I tightened a few details before building:
    - Implemented source fetching with `requestUrl()` rather than raw browser `fetch()`.
    - This is more reliable in the plugin environment.
 
-5. **Invoke `pi` through stdin on Windows-safe process paths**
-   - The analyzer now pipes prompts through stdin and closes stdin explicitly.
-   - On Windows it avoids the problematic `shell: true` + `@prompt-file` path handling that caused `pi.cmd` invocations to misbehave.
+5. **Make the research focus configurable without losing the default profile**
+   - The plugin now keeps the current inner-ear defaults as a reusable profile.
+   - Focus label, analyzer guidance, and PubMed query supplementation can all be changed in settings.
 
-6. **Write explicit empty newsletters**
+6. **Invoke `pi` through stdin on Windows-safe process paths**
+   - The analyzer now pipes prompts through stdin and closes stdin explicitly.
+   - On Windows it quotes configured executable paths safely before handing them to `cmd.exe`.
+
+7. **Write explicit empty newsletters**
    - If no new papers are found, or if papers are found but none match the keyword filter, the plugin still writes a dated note explaining that outcome.
+
+8. **Fail loudly when fetches are broken**
+   - If every enabled source fails, the run now errors out instead of silently writing a misleading empty newsletter.
+
 
 ## Built structure
 
@@ -67,16 +75,17 @@ src/
   - bioRxiv
   - Europe PMC
 - Cross-source deduplication
-- Seen-log persistence in `.scholar/seen.json`
+- Multiple topic subscriptions with per-topic query, analyzer guidance, PubMed supplement, and seen log, merged into one daily newsletter
+- Seen-log persistence in `.scholar/seen/<subscription-id>.json` with legacy fallback from `.scholar/seen.json`
 - Local boolean keyword filtering (`AND`, `OR`, quoted phrases, simple grouping)
 - `pi`-based scoring and summarization in batches
-- Newsletter note generation in the configured inbox folder
+- Single daily newsletter note generation in the configured inbox folder with per-topic sections
 
 ## Key settings
 
 - Inbox folder
 - Startup auto-run toggle
-- Keyword query
+- Multiple topic subscriptions, each with its own focus label, analyzer guidance, PubMed query supplement, and keyword query
 - Source toggles
 - Thresholds for high / possible / weak matches
 - `pi` executable path

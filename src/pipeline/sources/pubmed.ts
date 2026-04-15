@@ -1,4 +1,4 @@
-import { ScholarSettings, Paper } from '../../types';
+import { ScholarSettings, Paper, TopicSubscription } from '../../types';
 import { toPubMedDate } from '../../utils/dates';
 import { delay, fetchJson, fetchText } from '../../utils/network';
 import { cleanAbstractText, normalizeWhitespace } from '../../utils/strings';
@@ -113,22 +113,27 @@ function parseArticles(xml: string): Paper[] {
 		.filter((paper): paper is Paper => paper !== null);
 }
 
-function buildPubMedQuery(keywordQuery: string): string {
-	const baseQuery = keywordQuery.trim();
-	const meshClause = '"Ear, Inner/growth and development"[MeSH] OR "Hair Cells, Auditory"[MeSH]';
-	if (!baseQuery) {
-		return meshClause;
+function buildPubMedQuery(subscription: TopicSubscription): string {
+	const baseQuery = subscription.keywordQuery.trim();
+	const supplement = subscription.focus.pubmedQuerySupplement.trim();
+	if (baseQuery && supplement) {
+		return `(${baseQuery}) OR (${supplement})`;
 	}
-	return `(${baseQuery}) OR (${meshClause})`;
+	return baseQuery || supplement || subscription.focus.label.trim();
 }
 
-export async function fetchPubMed(settings: ScholarSettings, from: string, to: string): Promise<Paper[]> {
+export async function fetchPubMed(
+	settings: ScholarSettings,
+	subscription: TopicSubscription,
+	from: string,
+	to: string,
+): Promise<Paper[]> {
 	const fromDate = from ? toPubMedDate(new Date(`${from}T00:00:00`)) : from;
 	const toDate = to ? toPubMedDate(new Date(`${to}T00:00:00`)) : to;
 	const apiKey = settings.pubmedApiKey.trim();
 	const searchUrl = new URL('https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi');
 	searchUrl.searchParams.set('db', 'pubmed');
-	searchUrl.searchParams.set('term', buildPubMedQuery(settings.keywordQuery));
+	searchUrl.searchParams.set('term', buildPubMedQuery(subscription));
 	searchUrl.searchParams.set('retmax', '1000');
 	searchUrl.searchParams.set('datetype', 'pdat');
 	searchUrl.searchParams.set('mindate', fromDate);

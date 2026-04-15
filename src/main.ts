@@ -1,8 +1,9 @@
 import { Notice, Plugin } from 'obsidian';
-import { runPipelineForDateRange } from './pipeline';
-import { mergeSettings } from './settings-data';
+import { commitSeenEntries, runPipelineForDateRange } from './pipeline';
+import { writeCombinedNewsletter } from './pipeline/newsletter';
+import { getEnabledSubscriptions, mergeSettings, normalizeSubscriptions } from './settings-data';
 import { ScholarSettingTab } from './settings';
-import { PluginData, ScholarSettings } from './types';
+import { PluginData, ScholarSettings, TopicRunFailure, TopicRunResult } from './types';
 import { getClampedCatchupStart, getDaysBetween, getYesterdayDateString, isSameLocalDay, toDateString } from './utils/dates';
 import { getErrorMessage } from './utils/strings';
 
@@ -61,6 +62,14 @@ export default class ScholarPlugin extends Plugin {
 			return;
 		}
 
+		const activeSubscriptions = getEnabledSubscriptions(this.settings);
+		if (activeSubscriptions.length === 0) {
+			if (force) {
+				new Notice('Scholar has no enabled topic subscriptions.');
+			}
+			return;
+		}
+
 		const now = new Date();
 		if (!force && this.lastRunTimestamp) {
 			const lastRun = new Date(this.lastRunTimestamp);
@@ -75,18 +84,49 @@ export default class ScholarPlugin extends Plugin {
 		}
 
 		this.isRunning = true;
+		let completedRuns = 0;
+		let writtenNewsletters = 0;
+		const allFailures: string[] = [];
+
 		try {
 			for (const date of datesToProcess) {
-				new Notice(`Scholar: processing ${date}...`);
-				await runPipelineForDateRange(this.app, this.settings, date, date);
+				const results: TopicRunResult[] = [];
+				const failures: TopicRunFailure[] = [];
+
+				for (const subscription of activeSubscriptions) {
+					new Notice(`Scholar: processing ${date} (${subscription.focus.label})...`);
+					try {
+						const result = await runPipelineForDateRange(this.app, this.settings, subscription, date, date);
+						results.push(result);
+						completedRuns += 1;
+					} catch (error) {
+						const message = getErrorMessage(error);
+						failures.push({ subscription, message });
+						allFailures.push(`${date} — ${subscription.focus.label}: ${message}`);
+						console.error(`Scholar: pipeline failed for ${subscription.focus.label} on ${date}.`, error);
+					}
+				}
+
+				if (results.length === 0 && failures.length > 0) {
+					continue;
+				}
+
+				await writeCombinedNewsletter(this.app, this.settings, date, results, failures);
+				writtenNewsletters += 1;
+
+				for (const result of results) {
+					await commitSeenEntries(this.app, result.subscription, result.seenPapersToAppend, date);
+				}
 			}
 
-			this.lastRunTimestamp = now.toISOString();
-			await this.savePluginData();
-			new Notice(`Scholar: finished ${datesToProcess.length} run${datesToProcess.length === 1 ? '' : 's'}.`);
-		} catch (error) {
-			console.error('Scholar: pipeline failed.', error);
-			new Notice(`Scholar: ${getErrorMessage(error)}`);
+			if (allFailures.length === 0) {
+				this.lastRunTimestamp = now.toISOString();
+				await this.savePluginData();
+				new Notice(`Scholar: finished ${writtenNewsletters} newsletter${writtenNewsletters === 1 ? '' : 's'}.`);
+				return;
+			}
+
+			new Notice(`Scholar: wrote ${writtenNewsletters} newsletter${writtenNewsletters === 1 ? '' : 's'} and completed ${completedRuns} topic run${completedRuns === 1 ? '' : 's'}, but ${allFailures.length} failed. Check the console.`);
 		} finally {
 			this.isRunning = false;
 		}
@@ -96,9 +136,11 @@ export default class ScholarPlugin extends Plugin {
 		const loaded = (await this.loadData()) as Partial<PluginData> | null;
 		this.lastRunTimestamp = loaded?.lastRunTimestamp ?? null;
 		this.settings = mergeSettings(loaded?.settings);
+		normalizeSubscriptions(this.settings);
 	}
 
 	async savePluginData(): Promise<void> {
+		normalizeSubscriptions(this.settings);
 		const data: PluginData = {
 			lastRunTimestamp: this.lastRunTimestamp,
 			settings: this.settings,

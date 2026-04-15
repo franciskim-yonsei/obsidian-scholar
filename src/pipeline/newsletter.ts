@@ -1,7 +1,13 @@
 import { App, TFile, normalizePath } from 'obsidian';
-import { ScholarSettings, ScoredPaper } from '../types';
-import { renderEmptyNewsletter, renderNewsletter } from './render';
+import { ScholarSettings, TopicRunFailure, TopicRunResult } from '../types';
 import { ensureFolderExists } from '../utils/vault';
+import { renderCombinedNewsletter } from './render';
+
+function getNewsletterPath(settings: ScholarSettings, date: string): string {
+	const folder = settings.inboxFolder.trim();
+	const relativePath = folder ? `${folder}/Scholar ${date}.md` : `Scholar ${date}.md`;
+	return normalizePath(relativePath);
+}
 
 async function writeNote(app: App, settings: ScholarSettings, date: string, content: string): Promise<void> {
 	const folder = settings.inboxFolder.trim();
@@ -9,8 +15,7 @@ async function writeNote(app: App, settings: ScholarSettings, date: string, cont
 		await ensureFolderExists(app.vault, folder);
 	}
 
-	const relativePath = folder ? `${folder}/Scholar ${date}.md` : `Scholar ${date}.md`;
-	const path = normalizePath(relativePath);
+	const path = getNewsletterPath(settings, date);
 	const existing = app.vault.getAbstractFileByPath(path);
 
 	if (existing instanceof TFile) {
@@ -21,42 +26,13 @@ async function writeNote(app: App, settings: ScholarSettings, date: string, cont
 	await app.vault.create(path, content);
 }
 
-export async function writeNewsletter(
+export async function writeCombinedNewsletter(
 	app: App,
 	settings: ScholarSettings,
 	date: string,
-	scored: ScoredPaper[],
-	totalFetched: number,
-	totalDeduped: number,
-	totalNew: number,
+	results: TopicRunResult[],
+	failures: TopicRunFailure[],
 ): Promise<void> {
-	const content = renderNewsletter(date, scored, settings, {
-		totalFetched,
-		totalDeduped,
-		totalNew,
-		totalMatched: scored.length,
-	});
-	await writeNote(app, settings, date, content);
-}
-
-export async function writeEmptyNewsletter(
-	app: App,
-	settings: ScholarSettings,
-	date: string,
-	totalFetched: number,
-	totalDeduped: number,
-	totalNew: number,
-	message: string,
-): Promise<void> {
-	const content = renderEmptyNewsletter(
-		date,
-		{
-			totalFetched,
-			totalDeduped,
-			totalNew,
-			totalMatched: 0,
-		},
-		message,
-	);
+	const content = renderCombinedNewsletter(date, results, failures, settings);
 	await writeNote(app, settings, date, content);
 }

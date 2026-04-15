@@ -1,8 +1,17 @@
 /* eslint-disable obsidianmd/ui/sentence-case */
-import { App, PluginSettingTab, Setting } from 'obsidian';
+import { App, Notice, PluginSettingTab, Setting } from 'obsidian';
 import type ScholarPlugin from './main';
-import { clampThresholds, DEFAULT_KEYWORD_QUERY, DEFAULT_SETTINGS, getDefaultPiPath } from './settings-data';
-import { ThinkingLevel } from './types';
+import {
+	clampThresholds,
+	createTopicSubscription,
+	DEFAULT_FOCUS_DESCRIPTION,
+	DEFAULT_FOCUS_LABEL,
+	DEFAULT_KEYWORD_QUERY,
+	DEFAULT_SETTINGS,
+	getDefaultPiPath,
+	normalizeSubscriptions,
+} from './settings-data';
+import { ThinkingLevel, TopicSubscription } from './types';
 
 export class ScholarSettingTab extends PluginSettingTab {
 	plugin: ScholarPlugin;
@@ -12,9 +21,99 @@ export class ScholarSettingTab extends PluginSettingTab {
 		this.plugin = plugin;
 	}
 
-	private async persist(): Promise<void> {
+	private async persist(redraw = false): Promise<void> {
+		normalizeSubscriptions(this.plugin.settings);
 		clampThresholds(this.plugin.settings);
 		await this.plugin.savePluginData();
+		if (redraw) {
+			this.display();
+		}
+	}
+
+	private renderSubscription(containerEl: HTMLElement, subscription: TopicSubscription, index: number): void {
+		new Setting(containerEl).setName(subscription.focus.label || `Topic ${index + 1}`).setHeading();
+
+		new Setting(containerEl)
+			.setName('Enabled')
+			.setDesc('Disable this topic without removing its saved query and seen log.')
+			.addToggle((toggle) =>
+				toggle.setValue(subscription.enabled).onChange(async (value) => {
+					subscription.enabled = value;
+					await this.persist();
+				}),
+			)
+			.addButton((button) => {
+				button.setButtonText('Remove topic').setWarning();
+				if (this.plugin.settings.subscriptions.length === 1) {
+					button.setDisabled(true);
+				}
+				button.onClick(async () => {
+					if (this.plugin.settings.subscriptions.length === 1) {
+						new Notice('Scholar needs at least one topic entry. Disable it instead of removing it.');
+						return;
+					}
+					this.plugin.settings.subscriptions.splice(index, 1);
+					await this.persist(true);
+				});
+			});
+
+		new Setting(containerEl)
+			.setName('Topic label')
+			.setDesc('Short name for this subscription and the analyzer topic label.')
+			.addText((text) =>
+				text
+					.setPlaceholder(index === 0 ? DEFAULT_FOCUS_LABEL : `Topic ${index + 1}`)
+					.setValue(subscription.focus.label)
+					.onChange(async (value) => {
+						subscription.focus.label = value.trim() || (index === 0 ? DEFAULT_FOCUS_LABEL : `Topic ${index + 1}`);
+						await this.persist();
+					}),
+			);
+
+		new Setting(containerEl)
+			.setName('Keyword query')
+			.setDesc('Primary query used for API search and local title plus abstract filtering. If left blank, source searches fall back to the topic label.')
+			.addTextArea((text) => {
+				text.setPlaceholder(index === 0 ? DEFAULT_KEYWORD_QUERY : subscription.focus.label || 'Topic query');
+				text.setValue(subscription.keywordQuery);
+				text.inputEl.rows = 6;
+				text.inputEl.cols = 60;
+				text.onChange(async (value) => {
+					subscription.keywordQuery = value.trim();
+					await this.persist();
+				});
+				return text;
+			});
+
+		new Setting(containerEl)
+			.setName('Focus description')
+			.setDesc('Optional extra guidance for the analyzer.')
+			.addTextArea((text) => {
+				text.setPlaceholder(index === 0 ? DEFAULT_FOCUS_DESCRIPTION : 'Optional analyzer guidance');
+				text.setValue(subscription.focus.description);
+				text.inputEl.rows = 4;
+				text.inputEl.cols = 60;
+				text.onChange(async (value) => {
+					subscription.focus.description = value.trim();
+					await this.persist();
+				});
+				return text;
+			});
+
+		new Setting(containerEl)
+			.setName('PubMed query supplement')
+			.setDesc('Optional PubMed-specific clause ORed into the search query. Leave blank for none.')
+			.addTextArea((text) => {
+				text.setPlaceholder(index === 0 ? DEFAULT_SETTINGS.subscriptions[0]?.focus.pubmedQuerySupplement ?? '' : '');
+				text.setValue(subscription.focus.pubmedQuerySupplement);
+				text.inputEl.rows = 3;
+				text.inputEl.cols = 60;
+				text.onChange(async (value) => {
+					subscription.focus.pubmedQuerySupplement = value.trim();
+					await this.persist();
+				});
+				return text;
+			});
 	}
 
 	display(): void {
@@ -60,21 +159,20 @@ export class ScholarSettingTab extends PluginSettingTab {
 					}),
 			);
 
-		new Setting(containerEl).setName('Keyword filter').setHeading();
+		new Setting(containerEl).setName('Topic subscriptions').setHeading();
 		new Setting(containerEl)
-			.setName('Keyword query')
-			.setDesc('Used both for API search queries and for local title plus abstract filtering.')
-			.addTextArea((text) => {
-				text.setPlaceholder(DEFAULT_KEYWORD_QUERY);
-				text.setValue(this.plugin.settings.keywordQuery);
-				text.inputEl.rows = 6;
-				text.inputEl.cols = 60;
-				text.onChange(async (value) => {
-					this.plugin.settings.keywordQuery = value.trim();
-					await this.persist();
-				});
-				return text;
-			});
+			.setName('Add topic')
+			.setDesc('Create another subscription with its own query, analyzer guidance, and seen log section inside the shared daily newsletter.')
+			.addButton((button) =>
+				button.setButtonText('Add topic').onClick(async () => {
+					this.plugin.settings.subscriptions.push(createTopicSubscription(`Topic ${this.plugin.settings.subscriptions.length + 1}`));
+					await this.persist(true);
+				}),
+			);
+
+		for (const [index, subscription] of this.plugin.settings.subscriptions.entries()) {
+			this.renderSubscription(containerEl, subscription, index);
+		}
 
 		new Setting(containerEl).setName('Sources').setHeading();
 		new Setting(containerEl)

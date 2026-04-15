@@ -19,6 +19,18 @@ export function titleKey(title: string): string | null {
 	return normalized.length > 0 ? `title:${normalized}` : null;
 }
 
+export function toSafePathSegment(value: string): string {
+	return normalizeTitle(value).replace(/\s+/g, '-').replace(/^-+|-+$/g, '').slice(0, 80);
+}
+
+export function toSafeFileName(value: string): string {
+	const sanitized = normalizeWhitespace(value)
+		.replace(/[\\/:*?"<>|]/g, ' ')
+		.replace(/\s+/g, ' ')
+		.trim();
+	return sanitized || 'Scholar topic';
+}
+
 export function getPaperIdentifier(paper: Paper, fallbackIndex?: number): string {
 	return paper.doi ?? paper.pmid ?? paper.ssid ?? titleKey(paper.title) ?? `paper-${fallbackIndex ?? 0}`;
 }

@@ -1,4 +1,4 @@
-import { ScholarSettings, ScoredPaper } from '../types';
+import { ScholarSettings, ScoredPaper, TopicRunFailure, TopicRunResult, TopicSubscription } from '../types';
 
 export interface NewsletterStats {
 	totalFetched: number;
@@ -17,10 +17,76 @@ export function formatAuthors(authors: string[]): string {
 	return `${authors[0]} et al.`;
 }
 
-function renderFrontmatter(date: string, stats: NewsletterStats, high: number, possible: number, weak: number): string[] {
+function toYamlString(value: string): string {
+	return JSON.stringify(value);
+}
+
+function getScoreBuckets(scored: ScoredPaper[], settings: ScholarSettings): {
+	high: ScoredPaper[];
+	possible: ScoredPaper[];
+	weak: ScoredPaper[];
+} {
+	return {
+		high: scored.filter((paper) => paper.score >= settings.thresholds.high),
+		possible: scored.filter((paper) => paper.score >= settings.thresholds.possible && paper.score < settings.thresholds.high),
+		weak: scored.filter((paper) => paper.score < settings.thresholds.possible),
+	};
+}
+
+function renderPaperHeading(title: string, url: string, level = '###'): string {
+	return url ? `${level} [${title}](${url})` : `${level} ${title}`;
+}
+
+function renderTopicBody(lines: string[], scored: ScoredPaper[], settings: ScholarSettings, headingLevel: '###' | '####'): void {
+	const { high, possible, weak } = getScoreBuckets(scored, settings);
+
+	if (high.length > 0) {
+		lines.push(`${headingLevel} High relevance`);
+		lines.push('');
+		for (const paper of high) {
+			lines.push(renderPaperHeading(paper.title, paper.url, headingLevel === '###' ? '####' : '#####'));
+			lines.push(`${formatAuthors(paper.authors)} · ${paper.source} · ${paper.publicationDate}`);
+			lines.push(`**Relevance (${paper.score}/100):** ${paper.reason}`);
+			lines.push(`> ${paper.summary}`);
+			lines.push('');
+		}
+	}
+
+	if (possible.length > 0) {
+		lines.push(`${headingLevel} Possible match`);
+		lines.push('');
+		for (const paper of possible) {
+			const linkedTitle = paper.url ? `**[${paper.title}](${paper.url})**` : `**${paper.title}**`;
+			lines.push(`- ${linkedTitle} (${paper.score}/100) — ${formatAuthors(paper.authors)} · ${paper.source} · ${paper.publicationDate}`);
+			lines.push(`  *${paper.reason}*`);
+		}
+		lines.push('');
+	}
+
+	if (settings.thresholds.showWeak && weak.length > 0) {
+		lines.push(`${headingLevel} Weak match`);
+		lines.push('');
+		for (const paper of weak) {
+			const linkedTitle = paper.url ? `[${paper.title}](${paper.url})` : paper.title;
+			lines.push(`- ${linkedTitle} (${paper.score}/100) · ${paper.source} · ${paper.publicationDate}`);
+		}
+		lines.push('');
+	}
+}
+
+function renderSingleFrontmatter(
+	subscription: TopicSubscription,
+	date: string,
+	stats: NewsletterStats,
+	high: number,
+	possible: number,
+	weak: number,
+): string[] {
 	return [
 		'---',
 		`date: ${date}`,
+		`subscription_id: ${toYamlString(subscription.id)}`,
+		`topic: ${toYamlString(subscription.focus.label)}`,
 		`papers_fetched: ${stats.totalFetched}`,
 		`papers_deduped: ${stats.totalDeduped}`,
 		`papers_new: ${stats.totalNew}`,
@@ -33,76 +99,122 @@ function renderFrontmatter(date: string, stats: NewsletterStats, high: number, p
 	];
 }
 
-function renderPaperHeading(title: string, url: string): string {
-	return url ? `### [${title}](${url})` : `### ${title}`;
-}
-
 export function renderNewsletter(
+	subscription: TopicSubscription,
 	date: string,
 	scored: ScoredPaper[],
 	settings: ScholarSettings,
 	stats: NewsletterStats,
 ): string {
-	const high = scored.filter((paper) => paper.score >= settings.thresholds.high);
-	const possible = scored.filter(
-		(paper) => paper.score >= settings.thresholds.possible && paper.score < settings.thresholds.high,
-	);
-	const weak = scored.filter((paper) => paper.score < settings.thresholds.possible);
+	const { high, possible, weak } = getScoreBuckets(scored, settings);
 	const lines: string[] = [];
 
-	lines.push(...renderFrontmatter(date, stats, high.length, possible.length, weak.length));
-	lines.push(`# Scholar Daily: ${date}`);
-	lines.push(
-		`*${stats.totalMatched} matched paper${stats.totalMatched === 1 ? '' : 's'} from ${stats.totalNew} new candidate${stats.totalNew === 1 ? '' : 's'}*`,
-	);
+	lines.push(...renderSingleFrontmatter(subscription, date, stats, high.length, possible.length, weak.length));
+	lines.push(`# Scholar Daily: ${subscription.focus.label} — ${date}`);
+	lines.push(`*${stats.totalMatched} matched paper${stats.totalMatched === 1 ? '' : 's'} from ${stats.totalNew} new candidate${stats.totalNew === 1 ? '' : 's'}*`);
 	lines.push('');
 
 	if (scored.length === 0) {
-		lines.push('No new papers matched the current keyword filter for this date.');
+		lines.push('No new papers matched the current keyword filter for this topic on this date.');
 		return lines.join('\n');
 	}
 
-	if (high.length > 0) {
-		lines.push('## High relevance');
-		lines.push('');
-		for (const paper of high) {
-			lines.push(renderPaperHeading(paper.title, paper.url));
-			lines.push(`${formatAuthors(paper.authors)} · ${paper.source} · ${paper.publicationDate}`);
-			lines.push(`**Relevance (${paper.score}/100):** ${paper.reason}`);
-			lines.push(`> ${paper.summary}`);
-			lines.push('');
-		}
-	}
-
-	if (possible.length > 0) {
-		lines.push('## Possible match');
-		lines.push('');
-		for (const paper of possible) {
-			const linkedTitle = paper.url ? `**[${paper.title}](${paper.url})**` : `**${paper.title}**`;
-			lines.push(`- ${linkedTitle} (${paper.score}/100) — ${formatAuthors(paper.authors)} · ${paper.source} · ${paper.publicationDate}`);
-			lines.push(`  *${paper.reason}*`);
-		}
-		lines.push('');
-	}
-
-	if (settings.thresholds.showWeak && weak.length > 0) {
-		lines.push('## Weak match');
-		lines.push('');
-		for (const paper of weak) {
-			const linkedTitle = paper.url ? `[${paper.title}](${paper.url})` : paper.title;
-			lines.push(`- ${linkedTitle} (${paper.score}/100) · ${paper.source} · ${paper.publicationDate}`);
-		}
-		lines.push('');
-	}
-
+	renderTopicBody(lines, scored, settings, '###');
 	return lines.join('\n');
 }
 
-export function renderEmptyNewsletter(date: string, stats: NewsletterStats, message: string): string {
+export function renderEmptyNewsletter(
+	subscription: TopicSubscription,
+	date: string,
+	stats: NewsletterStats,
+	message: string,
+): string {
 	const lines: string[] = [];
-	lines.push(...renderFrontmatter(date, stats, 0, 0, 0));
-	lines.push(`# Scholar Daily: ${date}`);
+	lines.push(...renderSingleFrontmatter(subscription, date, stats, 0, 0, 0));
+	lines.push(`# Scholar Daily: ${subscription.focus.label} — ${date}`);
 	lines.push('');
 	lines.push(message);
+	return lines.join('\n');
+}
+
+function renderCombinedFrontmatter(date: string, results: TopicRunResult[], failures: TopicRunFailure[], settings: ScholarSettings): string[] {
+	const totalFetched = results.reduce((sum, result) => sum + result.totalFetched, 0);
+	const totalDeduped = results.reduce((sum, result) => sum + result.totalDeduped, 0);
+	const totalNew = results.reduce((sum, result) => sum + result.totalNew, 0);
+	const totalMatched = results.reduce((sum, result) => sum + result.totalMatched, 0);
+	const allScored = results.flatMap((result) => result.scored);
+	const { high, possible, weak } = getScoreBuckets(allScored, settings);
+
+	return [
+		'---',
+		`date: ${date}`,
+		`topics_enabled: ${results.length + failures.length}`,
+		`topics_succeeded: ${results.length}`,
+		`topics_failed: ${failures.length}`,
+		`papers_fetched: ${totalFetched}`,
+		`papers_deduped: ${totalDeduped}`,
+		`papers_new: ${totalNew}`,
+		`papers_matched: ${totalMatched}`,
+		`high: ${high.length}`,
+		`possible: ${possible.length}`,
+		`weak: ${weak.length}`,
+		'---',
+		'',
+	];
+}
+
+export function renderCombinedNewsletter(
+	date: string,
+	results: TopicRunResult[],
+	failures: TopicRunFailure[],
+	settings: ScholarSettings,
+): string {
+	const lines: string[] = [];
+	const totalMatched = results.reduce((sum, result) => sum + result.totalMatched, 0);
+	const totalNew = results.reduce((sum, result) => sum + result.totalNew, 0);
+
+	lines.push(...renderCombinedFrontmatter(date, results, failures, settings));
+	lines.push(`# Scholar Daily: ${date}`);
+	lines.push(`*${totalMatched} matched paper${totalMatched === 1 ? '' : 's'} across ${results.length} successful topic${results.length === 1 ? '' : 's'} from ${totalNew} new candidate${totalNew === 1 ? '' : 's'}*`);
+	lines.push('');
+
+	lines.push('## Topic summary');
+	lines.push('');
+	for (const result of results) {
+		lines.push(`- **${result.subscription.focus.label}** — ${result.totalMatched} matched, ${result.totalNew} new, ${result.totalFetched} fetched`);
+	}
+	for (const failure of failures) {
+		lines.push(`- **${failure.subscription.focus.label}** — failed: ${failure.message}`);
+	}
+	lines.push('');
+
+	if (failures.length > 0) {
+		lines.push('## Failed topics');
+		lines.push('');
+		for (const failure of failures) {
+			lines.push(`- **${failure.subscription.focus.label}** (${failure.subscription.id}) — ${failure.message}`);
+		}
+		lines.push('');
+	}
+
+	if (results.length === 0) {
+		lines.push('No topic results were available for this date.');
+		return lines.join('\n');
+	}
+
+	for (const result of results) {
+		lines.push(`## ${result.subscription.focus.label}`);
+		lines.push('');
+		lines.push(`*${result.totalMatched} matched paper${result.totalMatched === 1 ? '' : 's'} from ${result.totalNew} new candidate${result.totalNew === 1 ? '' : 's'}*`);
+		lines.push('');
+		if (result.scored.length === 0) {
+			lines.push(result.message ?? 'No new papers matched this topic on this date.');
+			lines.push('');
+			continue;
+		}
+
+		renderTopicBody(lines, result.scored, settings, '###');
+	}
+
 	return lines.join('\n');
 }

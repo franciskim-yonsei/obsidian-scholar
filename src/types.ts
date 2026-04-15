@@ -33,10 +33,23 @@ export interface SeenLog {
 	lastUpdated: string;
 }
 
+export interface ResearchFocus {
+	label: string;
+	description: string;
+	pubmedQuerySupplement: string;
+}
+
+export interface TopicSubscription {
+	id: string;
+	enabled: boolean;
+	keywordQuery: string;
+	focus: ResearchFocus;
+}
+
 export interface ScholarSettings {
 	inboxFolder: string;
-	keywordQuery: string;
 	runOnStartup: boolean;
+	subscriptions: TopicSubscription[];
 	sources: {
 		pubmed: boolean;
 		biorxiv: boolean;
@@ -59,6 +72,22 @@ export interface ScholarSettings {
 export interface PluginData {
 	lastRunTimestamp: string | null;
 	settings: ScholarSettings;
+}
+
+export interface TopicRunResult {
+	subscription: TopicSubscription;
+	scored: ScoredPaper[];
+	totalFetched: number;
+	totalDeduped: number;
+	totalNew: number;
+	totalMatched: number;
+	message?: string;
+	seenPapersToAppend: Paper[];
+}
+
+export interface TopicRunFailure {
+	subscription: TopicSubscription;
+	message: string;
 }
 
 export interface AnalyzerResult {

@@ -5,10 +5,10 @@ import { DOMParser as XmldomParser } from '@xmldom/xmldom';
 import { analyzeWithPi } from '../pipeline/analyzer';
 import { deduplicateCrossSource } from '../pipeline/deduplicator';
 import { fetchAll } from '../pipeline/fetcher';
-import { applyKeywordFilter } from '../pipeline/keywordFilter';
+import { applyKeywordFilter, parseQuery } from '../pipeline/keywordFilter';
 import { renderEmptyNewsletter, renderNewsletter } from '../pipeline/render';
-import { DEFAULT_SETTINGS, mergeSettings } from '../settings-data';
-import { Paper, ScoredPaper, ScholarSettings, SeenEntry } from '../types';
+import { getEnabledSubscriptions, mergeSettings } from '../settings-data';
+import { Paper, ScoredPaper, ScholarSettings, SeenEntry, TopicSubscription } from '../types';
 import { buildSeenSet, getPaperKeys } from '../utils/seenLog';
 import { getPaperIdentifier, normalizeWhitespace } from '../utils/strings';
 
@@ -21,6 +21,7 @@ interface HarnessArgs {
 	query?: string;
 	sources?: string[];
 	seenFile?: string;
+	subscription?: string;
 	updateSeen: boolean;
 }
 
@@ -29,7 +30,10 @@ interface HarnessReport {
 	to: string;
 	analyzer: string;
 	outputDir: string;
+	subscriptionId: string;
+	subscriptionLabel: string;
 	sourceCounts: Record<string, number>;
+	failedSources: string[];
 	rawCount: number;
 	dedupedCount: number;
 	seenFilteredCount: number;
@@ -44,7 +48,24 @@ type HarnessSource = (typeof VALID_SOURCES)[number];
 (globalThis as { DOMParser?: typeof XmldomParser }).DOMParser = XmldomParser;
 
 function printUsage(): void {
-	console.log(`Scholar harness\n\nUsage:\n  npm run harness -- --from YYYY-MM-DD [options]\n\nOptions:\n  --from YYYY-MM-DD           Start date\n  --to YYYY-MM-DD             End date (default: same as --from)\n  --query TEXT                Override keyword query\n  --sources a,b,c             Limit sources to pubmed, biorxiv, europepmc\n  --settings FILE             Load partial settings JSON\n  --analyzer mock|pi|none     Choose analyzer mode (default: mock)\n  --output DIR                Output directory (default: .harness-output/<timestamp>)\n  --seen-file FILE            Optional local seen-log JSON file\n  --update-seen               Append newly seen papers to the seen file\n  --help                      Show this help\n`);
+	console.log(`Scholar harness
+
+Usage:
+  npm run harness -- --from YYYY-MM-DD [options]
+
+Options:
+  --from YYYY-MM-DD           Start date
+  --to YYYY-MM-DD             End date (default: same as --from)
+  --query TEXT                Override keyword query for the selected subscription
+  --subscription ID|LABEL     Choose which subscription to run
+  --sources a,b,c             Limit sources to pubmed, biorxiv, europepmc
+  --settings FILE             Load partial settings JSON
+  --analyzer mock|pi|none     Choose analyzer mode (default: mock)
+  --output DIR                Output directory (default: .harness-output/<timestamp>)
+  --seen-file FILE            Optional local seen-log JSON file
+  --update-seen               Append newly seen papers to the seen file
+  --help                      Show this help
+`);
 }
 
 function getDefaultOutputDir(): string {
@@ -91,6 +112,10 @@ function parseArgs(argv: string[]): HarnessArgs {
 				break;
 			case '--settings':
 				args.settingsPath = value ? resolve(value) : undefined;
+				index += 1;
+				break;
+			case '--subscription':
+				args.subscription = value ?? '';
 				index += 1;
 				break;
 			case '--sources':
@@ -147,10 +172,7 @@ async function loadSettings(args: HarnessArgs): Promise<ScholarSettings> {
 		saved = await readJsonFile<Partial<ScholarSettings>>(args.settingsPath);
 	}
 
-	const settings = mergeSettings(saved ?? DEFAULT_SETTINGS);
-	if (args.query) {
-		settings.keywordQuery = args.query;
-	}
+	const settings = mergeSettings(saved);
 	if (args.sources) {
 		const requested = new Set(args.sources);
 		for (const source of VALID_SOURCES) {
@@ -159,6 +181,38 @@ async function loadSettings(args: HarnessArgs): Promise<ScholarSettings> {
 	}
 
 	return settings;
+}
+
+function selectSubscription(settings: ScholarSettings, args: HarnessArgs): TopicSubscription {
+	const requested = args.subscription?.trim().toLowerCase();
+	if (requested) {
+		const match = settings.subscriptions.find((subscription) =>
+			subscription.id.toLowerCase() === requested || subscription.focus.label.trim().toLowerCase() === requested,
+		);
+		if (!match) {
+			throw new Error(`No subscription matched "${args.subscription}".`);
+		}
+		return {
+			...match,
+			focus: { ...match.focus },
+		};
+	}
+
+	const enabledSubscriptions = getEnabledSubscriptions(settings);
+	if (enabledSubscriptions.length === 0) {
+		throw new Error('No enabled subscriptions are configured.');
+	}
+	if (enabledSubscriptions.length > 1) {
+		console.warn(`Scholar harness: multiple subscriptions are enabled; using the first one (${enabledSubscriptions[0]?.focus.label}). Pass --subscription to choose another.`);
+	}
+	const selected = enabledSubscriptions[0];
+	if (!selected) {
+		throw new Error('No enabled subscriptions are configured.');
+	}
+	return {
+		...selected,
+		focus: { ...selected.focus },
+	};
 }
 
 function countBySource(papers: Paper[]): Record<string, number> {
@@ -225,36 +279,74 @@ function summarizeText(text: string): string {
 	return summary || 'No abstract available.';
 }
 
-function scorePaper(paper: Paper): { score: number; reason: string } {
-	const haystack = `${paper.title} ${paper.abstract}`.toLowerCase();
-	const topicTerms = ['inner ear', 'cochlea', 'hair cell', 'spiral ganglion', 'otic', 'utricle', 'saccule'];
-	const developmentTerms = ['development', 'differentiat', 'morphogen', 'progenitor', 'regeneration', 'specification'];
-	const topicMatches = topicTerms.filter((term) => haystack.includes(term)).length;
-	const developmentMatches = developmentTerms.filter((term) => haystack.includes(term)).length;
-	const score = Math.min(100, topicMatches * 20 + developmentMatches * 12 + (paper.source === 'pubmed' ? 6 : 0));
+function getMockScoringTerms(subscription: TopicSubscription): string[] {
+	const queryTerms: string[] = [];
+	for (const group of parseQuery(subscription.keywordQuery)) {
+		for (const term of group) {
+			const normalized = normalizeWhitespace(term).toLowerCase();
+			if (normalized.length > 1) {
+				queryTerms.push(normalized);
+			}
+		}
+	}
+	if (queryTerms.length > 0) {
+		return [...new Set(queryTerms)];
+	}
 
-	if (score >= 75) {
-		return { score, reason: 'Multiple topic and development terms matched in the title or abstract.' };
-	}
-	if (score >= 50) {
-		return { score, reason: 'Some relevant inner ear development terms matched.' };
-	}
-	return { score, reason: 'Only weak or partial matches were found in the title or abstract.' };
+	const fallbackTerms = normalizeWhitespace(`${subscription.focus.label} ${subscription.focus.description}`)
+		.toLowerCase()
+		.match(/[\p{L}\p{N}][\p{L}\p{N}'’-]{2,}/gu) ?? [];
+	return [...new Set(fallbackTerms)].slice(0, 20);
 }
 
-function mockAnalyze(papers: Paper[]): ScoredPaper[] {
+function countMatchedTerms(haystack: string, terms: string[]): number {
+	let count = 0;
+	for (const term of terms) {
+		if (haystack.includes(term)) {
+			count += 1;
+		}
+	}
+	return count;
+}
+
+function scorePaper(paper: Paper, subscription: TopicSubscription): { score: number; reason: string } {
+	const parsedQuery = parseQuery(subscription.keywordQuery);
+	const terms = getMockScoringTerms(subscription);
+	const titleHaystack = paper.title.toLowerCase();
+	const abstractHaystack = paper.abstract.toLowerCase();
+	const fullHaystack = `${titleHaystack} ${abstractHaystack}`;
+	const matchedGroups = parsedQuery.filter((group) => group.some((term) => fullHaystack.includes(term.toLowerCase()))).length;
+	const titleMatches = countMatchedTerms(titleHaystack, terms);
+	const abstractMatches = countMatchedTerms(abstractHaystack, terms);
+	const score = Math.min(100, matchedGroups * 28 + titleMatches * 10 + abstractMatches * 4 + (paper.source === 'pubmed' ? 4 : 0));
+
+	if (score >= 75) {
+		return { score, reason: 'Several configured focus terms matched strongly, including prominent matches in the title or abstract.' };
+	}
+	if (score >= 50) {
+		return { score, reason: 'The paper matched the configured research focus in multiple places.' };
+	}
+	return { score, reason: 'Only weak or partial matches were found against the configured research focus.' };
+}
+
+function mockAnalyze(papers: Paper[], subscription: TopicSubscription): ScoredPaper[] {
 	return papers.map((paper, index) => {
-		const { score, reason } = scorePaper(paper);
+		const { score, reason } = scorePaper(paper, subscription);
 		return {
 			...paper,
 			score,
 			summary: summarizeText(paper.abstract),
 			reason: `${reason} [mock ${getPaperIdentifier(paper, index)}]`,
 		};
-		}).sort((left, right) => right.score - left.score);
+	}).sort((left, right) => right.score - left.score);
 }
 
-async function runAnalyzer(mode: HarnessArgs['analyzer'], papers: Paper[], settings: ScholarSettings): Promise<ScoredPaper[]> {
+async function runAnalyzer(
+	mode: HarnessArgs['analyzer'],
+	papers: Paper[],
+	settings: ScholarSettings,
+	subscription: TopicSubscription,
+): Promise<ScoredPaper[]> {
 	if (mode === 'none') {
 		return papers.map((paper, index) => ({
 			...paper,
@@ -264,28 +356,45 @@ async function runAnalyzer(mode: HarnessArgs['analyzer'], papers: Paper[], setti
 		}));
 	}
 	if (mode === 'pi') {
-		const scored = await analyzeWithPi(papers, settings);
+		const scored = await analyzeWithPi(papers, settings, subscription);
 		return scored.sort((left, right) => right.score - left.score);
 	}
-	return mockAnalyze(papers);
+	return mockAnalyze(papers, subscription);
+}
+
+function describeFailures(failures: { name: string; message: string }[]): string {
+	return failures.map((failure) => `${failure.name} (${failure.message})`).join('; ');
 }
 
 async function main(): Promise<void> {
 	const args = parseArgs(process.argv.slice(2));
 	const settings = await loadSettings(args);
+	const subscription = selectSubscription(settings, args);
+	if (args.query) {
+		subscription.keywordQuery = args.query;
+	}
 
 	console.log(`Scholar harness: fetching ${args.from} to ${args.to}`);
+	console.log(`Subscription: ${subscription.focus.label} (${subscription.id})`);
 	console.log(`Sources: ${VALID_SOURCES.filter((source) => settings.sources[source]).join(', ') || 'none'}`);
 	console.log(`Analyzer: ${args.analyzer}`);
 	console.log(`Output: ${args.outputDir}`);
 
-	const rawPapers = await fetchAll(settings, args.from, args.to);
+	const fetchResult = await fetchAll(settings, subscription, args.from, args.to);
+	const rawPapers = fetchResult.papers;
+	if (rawPapers.length === 0 && fetchResult.failures.length > 0) {
+		throw new Error(`No papers were fetched because these sources failed: ${describeFailures(fetchResult.failures)}`);
+	}
+	if (fetchResult.failures.length > 0) {
+		console.warn(`Scholar harness: continuing with partial fetch results. Failed sources: ${describeFailures(fetchResult.failures)}`);
+	}
+
 	const dedupedPapers = deduplicateCrossSource(rawPapers);
 	const seenEntries = await loadSeenEntries(args.seenFile);
 	const seenSet = buildSeenSet({ entries: seenEntries, lastUpdated: '' });
 	const unseenPapers = dedupedPapers.filter((paper) => !getPaperKeys(paper).some((key) => seenSet.has(key)));
-	const matchedPapers = applyKeywordFilter(unseenPapers, settings.keywordQuery);
-	const scoredPapers = await runAnalyzer(args.analyzer, matchedPapers, settings);
+	const matchedPapers = applyKeywordFilter(unseenPapers, subscription.keywordQuery);
+	const scoredPapers = await runAnalyzer(args.analyzer, matchedPapers, settings, subscription);
 
 	await mkdir(args.outputDir, { recursive: true });
 	await writeJson(resolve(args.outputDir, 'raw-papers.json'), rawPapers);
@@ -295,20 +404,20 @@ async function main(): Promise<void> {
 	await writeJson(resolve(args.outputDir, 'scored-papers.json'), scoredPapers);
 
 	const newsletter = matchedPapers.length > 0
-		? renderNewsletter(args.to, scoredPapers, settings, {
+		? renderNewsletter(subscription, args.to, scoredPapers, settings, {
 			totalFetched: rawPapers.length,
 			totalDeduped: dedupedPapers.length,
 			totalNew: unseenPapers.length,
 			totalMatched: scoredPapers.length,
 		})
-		: renderEmptyNewsletter(args.to, {
+		: renderEmptyNewsletter(subscription, args.to, {
 			totalFetched: rawPapers.length,
 			totalDeduped: dedupedPapers.length,
 			totalNew: unseenPapers.length,
 			totalMatched: 0,
 		}, unseenPapers.length === 0
-			? 'No newly discovered papers were found for this date range.'
-			: 'New papers were found, but none matched the current keyword filter.');
+			? 'No newly discovered papers were found for this topic in this date range.'
+			: 'New papers were found for this topic, but none matched the current keyword filter.');
 	await writeText(resolve(args.outputDir, 'newsletter.md'), newsletter);
 
 	const report: HarnessReport = {
@@ -316,7 +425,10 @@ async function main(): Promise<void> {
 		to: args.to,
 		analyzer: args.analyzer,
 		outputDir: args.outputDir,
+		subscriptionId: subscription.id,
+		subscriptionLabel: subscription.focus.label,
 		sourceCounts: countBySource(rawPapers),
+		failedSources: fetchResult.failures.map((failure) => failure.name),
 		rawCount: rawPapers.length,
 		dedupedCount: dedupedPapers.length,
 		seenFilteredCount: unseenPapers.length,
@@ -336,6 +448,9 @@ async function main(): Promise<void> {
 	console.log(`  keyword matched:   ${report.keywordMatchedCount}`);
 	console.log(`  scored:            ${report.scoredCount}`);
 	console.log('  by source:', report.sourceCounts);
+	if (report.failedSources.length > 0) {
+		console.log('  failed sources:', report.failedSources.join(', '));
+	}
 	console.log('Artifacts written:');
 	console.log(`  ${resolve(args.outputDir, 'report.json')}`);
 	console.log(`  ${resolve(args.outputDir, 'newsletter.md')}`);
