@@ -167,7 +167,7 @@ function buildSpawnSpec(command: string, args: string | string[]): { spawnCmd: s
 	const commandLine = [command, ...commandArgs].map(quoteWindowsCmdArg).join(' ');
 	return {
 		spawnCmd: 'cmd.exe',
-		spawnArgs: ['/d', '/s', '/c', `"${commandLine}"`],
+		spawnArgs: ['/d', '/s', '/c', commandLine],
 	};
 }
 
