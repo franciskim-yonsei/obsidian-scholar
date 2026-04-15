@@ -1,5 +1,5 @@
 import { App, TFile, normalizePath } from 'obsidian';
-import { ScholarSettings, TopicRunFailure, TopicRunResult } from '../types';
+import { ScholarSettings, ScoredPaper, TopicRunFailure, TopicRunResult } from '../types';
 import { ensureFolderExists } from '../utils/vault';
 import { renderCombinedNewsletter } from './render';
 
@@ -32,7 +32,8 @@ export async function writeCombinedNewsletter(
 	date: string,
 	results: TopicRunResult[],
 	failures: TopicRunFailure[],
+	adjacent: ScoredPaper[] = [],
 ): Promise<void> {
-	const content = renderCombinedNewsletter(date, results, failures, settings);
+	const content = renderCombinedNewsletter(date, results, failures, adjacent, settings);
 	await writeNote(app, settings, date, content);
 }

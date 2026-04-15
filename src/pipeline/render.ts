@@ -137,7 +137,7 @@ export function renderEmptyNewsletter(
 	return lines.join('\n');
 }
 
-function renderCombinedFrontmatter(date: string, results: TopicRunResult[], failures: TopicRunFailure[], settings: ScholarSettings): string[] {
+function renderCombinedFrontmatter(date: string, results: TopicRunResult[], failures: TopicRunFailure[], adjacent: ScoredPaper[], settings: ScholarSettings): string[] {
 	const totalFetched = results.reduce((sum, result) => sum + result.totalFetched, 0);
 	const totalDeduped = results.reduce((sum, result) => sum + result.totalDeduped, 0);
 	const totalNew = results.reduce((sum, result) => sum + result.totalNew, 0);
@@ -155,6 +155,7 @@ function renderCombinedFrontmatter(date: string, results: TopicRunResult[], fail
 		`papers_deduped: ${totalDeduped}`,
 		`papers_new: ${totalNew}`,
 		`papers_matched: ${totalMatched}`,
+		`papers_adjacent: ${adjacent.length}`,
 		`high: ${high.length}`,
 		`possible: ${possible.length}`,
 		`weak: ${weak.length}`,
@@ -163,17 +164,31 @@ function renderCombinedFrontmatter(date: string, results: TopicRunResult[], fail
 	];
 }
 
+function renderAdjacentSection(lines: string[], adjacent: ScoredPaper[]): void {
+	lines.push('## Adjacent science');
+	lines.push('');
+	lines.push('*Papers outside your subscribed topics — scored for methodological or conceptual relevance*');
+	lines.push('');
+	for (const paper of adjacent) {
+		const linkedTitle = paper.url ? `**[${paper.title}](${paper.url})**` : `**${paper.title}**`;
+		lines.push(`- ${linkedTitle} (${paper.score}/100) — ${formatAuthors(paper.authors)} · ${paper.source} · ${paper.publicationDate}`);
+		lines.push(`  *${paper.reason}*`);
+	}
+	lines.push('');
+}
+
 export function renderCombinedNewsletter(
 	date: string,
 	results: TopicRunResult[],
 	failures: TopicRunFailure[],
+	adjacent: ScoredPaper[],
 	settings: ScholarSettings,
 ): string {
 	const lines: string[] = [];
 	const totalMatched = results.reduce((sum, result) => sum + result.totalMatched, 0);
 	const totalNew = results.reduce((sum, result) => sum + result.totalNew, 0);
 
-	lines.push(...renderCombinedFrontmatter(date, results, failures, settings));
+	lines.push(...renderCombinedFrontmatter(date, results, failures, adjacent, settings));
 	lines.push(`# Scholar Daily: ${date}`);
 	lines.push(`*${totalMatched} matched paper${totalMatched === 1 ? '' : 's'} across ${results.length} successful topic${results.length === 1 ? '' : 's'} from ${totalNew} new candidate${totalNew === 1 ? '' : 's'}*`);
 	lines.push('');
@@ -214,6 +229,10 @@ export function renderCombinedNewsletter(
 		}
 
 		renderTopicBody(lines, result.scored, settings, '###');
+	}
+
+	if (adjacent.length > 0) {
+		renderAdjacentSection(lines, adjacent);
 	}
 
 	return lines.join('\n');
