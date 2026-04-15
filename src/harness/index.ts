@@ -2,13 +2,13 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { DOMParser as XmldomParser } from '@xmldom/xmldom';
-import { analyzeWithPi } from '../pipeline/analyzer';
+import { analyzeAdjacentWithPi, analyzeWithPi } from '../pipeline/analyzer';
 import { deduplicateCrossSource } from '../pipeline/deduplicator';
 import { fetchAll } from '../pipeline/fetcher';
-import { applyKeywordFilter, collectPositiveTerms, countSatisfiedPositiveClauses, parseQuery } from '../pipeline/keywordFilter';
-import { renderEmptyNewsletter, renderNewsletter } from '../pipeline/render';
+import { applyKeywordFilter, collectPositiveTerms, countSatisfiedPositiveClauses, matchesPaper, parseQuery } from '../pipeline/keywordFilter';
+import { renderCombinedNewsletter, renderEmptyNewsletter, renderNewsletter } from '../pipeline/render';
 import { getEnabledSubscriptions, mergeSettings } from '../settings-data';
-import { Paper, ScoredPaper, ScholarSettings, SeenEntry, TopicSubscription } from '../types';
+import { Paper, ScoredPaper, ScholarSettings, SeenEntry, TopicRunFailure, TopicRunResult, TopicSubscription } from '../types';
 import { buildSeenSet, getPaperKeys } from '../utils/seenLog';
 import { getPaperIdentifier, normalizeWhitespace } from '../utils/strings';
 
@@ -23,6 +23,7 @@ interface HarnessArgs {
 	seenFile?: string;
 	subscription?: string;
 	updateSeen: boolean;
+	combined: boolean;
 }
 
 interface HarnessReport {
@@ -63,6 +64,7 @@ Options:
   --analyzer mock|pi|none     Choose analyzer mode (default: mock)
   --output DIR                Output directory (default: .harness-output/<timestamp>)
   --seen-file FILE            Optional local seen-log JSON file
+  --combined                  Run all enabled subscriptions and render combined newsletter
   --update-seen               Append newly seen papers to the seen file
   --help                      Show this help
 `);
@@ -81,6 +83,7 @@ function parseArgs(argv: string[]): HarnessArgs {
 		analyzer: 'mock',
 		outputDir: getDefaultOutputDir(),
 		updateSeen: false,
+		combined: false,
 	};
 
 	for (let index = 0; index < argv.length; index += 1) {
@@ -139,6 +142,9 @@ function parseArgs(argv: string[]): HarnessArgs {
 			case '--seen-file':
 				args.seenFile = value ? resolve(value) : undefined;
 				index += 1;
+				break;
+			case '--combined':
+				args.combined = true;
 				break;
 			case '--update-seen':
 				args.updateSeen = true;
@@ -359,19 +365,152 @@ function describeFailures(failures: { name: string; message: string }[]): string
 	return failures.map((failure) => `${failure.name} (${failure.message})`).join('; ');
 }
 
+function mockAnalyzeAdjacent(papers: Paper[], settings: ScholarSettings): ScoredPaper[] {
+	const parsedQuery = parseQuery(settings.adjacentQuery);
+	return papers
+		.map((paper, index) => {
+			const matchedClauses = countSatisfiedPositiveClauses(paper, parsedQuery);
+			const score = Math.min(100, matchedClauses * 25 + 15);
+			return {
+				...paper,
+				score,
+				summary: summarizeText(paper.abstract),
+				reason: `Matched ${matchedClauses} clause(s) of the adjacent-interest query. [mock ${getPaperIdentifier(paper, index)}]`,
+			};
+		})
+		.sort((a, b) => b.score - a.score);
+}
+
+async function runCombinedMode(args: HarnessArgs, settings: ScholarSettings): Promise<void> {
+	const enabledSubscriptions = getEnabledSubscriptions(settings);
+	if (enabledSubscriptions.length === 0) {
+		throw new Error('No enabled subscriptions are configured.');
+	}
+
+	const seenEntries = await loadSeenEntries(args.seenFile);
+	const seenSet = buildSeenSet({ entries: seenEntries, lastUpdated: '' });
+	const allNewPapers: Paper[] = [];
+
+	const results: TopicRunResult[] = [];
+	const failures: TopicRunFailure[] = [];
+
+	for (const subscription of enabledSubscriptions) {
+		console.log(`\nSubscription: ${subscription.focus.label} (${subscription.id})`);
+		const fetchResult = await fetchAll(settings, subscription, args.from, args.to);
+		const rawPapers = fetchResult.papers;
+
+		if (rawPapers.length === 0 && fetchResult.failures.length > 0) {
+			const message = describeFailures(fetchResult.failures);
+			console.warn(`  All sources failed: ${message}`);
+			failures.push({ subscription, message });
+			continue;
+		}
+		if (fetchResult.failures.length > 0) {
+			console.warn(`  Partial fetch failures: ${describeFailures(fetchResult.failures)}`);
+		}
+
+		const dedupedPapers = deduplicateCrossSource(rawPapers);
+		const newPapers = dedupedPapers.filter((paper) => !getPaperKeys(paper).some((key) => seenSet.has(key)));
+		allNewPapers.push(...newPapers);
+
+		const coreParsed = parseQuery(subscription.keywordQuery);
+		const matchedPapers = newPapers.filter((paper) => matchesPaper(paper, coreParsed));
+		const rejectedPapers = newPapers.filter((paper) => !matchesPaper(paper, coreParsed));
+
+		console.log(`  fetched: ${rawPapers.length}  deduped: ${dedupedPapers.length}  new: ${newPapers.length}  matched: ${matchedPapers.length}  rejected: ${rejectedPapers.length}`);
+
+		const scored = args.analyzer === 'pi'
+			? await analyzeWithPi(matchedPapers, settings, subscription)
+			: await runAnalyzer(args.analyzer, matchedPapers, settings, subscription);
+		scored.sort((a, b) => b.score - a.score);
+
+		results.push({
+			subscription,
+			scored,
+			rejectedPapers,
+			totalFetched: rawPapers.length,
+			totalDeduped: dedupedPapers.length,
+			totalNew: newPapers.length,
+			totalMatched: scored.length,
+			seenPapersToAppend: newPapers,
+		});
+	}
+
+	// Build adjacent candidate pool.
+	const matchedKeys = new Set<string>();
+	for (const result of results) {
+		for (const paper of result.scored) {
+			for (const key of getPaperKeys(paper)) {
+				matchedKeys.add(key);
+			}
+		}
+	}
+
+	const seenRejectedKeys = new Set<string>();
+	const deduplicatedRejected = results
+		.flatMap((result) => result.rejectedPapers)
+		.filter((paper) => {
+			const keys = getPaperKeys(paper);
+			if (keys.some((key) => seenRejectedKeys.has(key) || matchedKeys.has(key))) {
+				return false;
+			}
+			for (const key of keys) {
+				seenRejectedKeys.add(key);
+			}
+			return true;
+		});
+
+	const adjacentQuery = settings.adjacentQuery.trim();
+	const adjacentCandidates = adjacentQuery ? applyKeywordFilter(deduplicatedRejected, adjacentQuery) : [];
+	console.log(`\nAdjacent candidates: ${adjacentCandidates.length} (from ${deduplicatedRejected.length} total rejected)`);
+
+	let adjacent: ScoredPaper[] = [];
+	if (adjacentCandidates.length > 0) {
+		const parsedCoreQueries = enabledSubscriptions.map((s) => parseQuery(s.keywordQuery));
+		const rawAdjacent = args.analyzer === 'pi'
+			? await analyzeAdjacentWithPi(adjacentCandidates, settings, enabledSubscriptions)
+			: mockAnalyzeAdjacent(adjacentCandidates, settings);
+		adjacent = rawAdjacent
+			.filter((paper) => !parsedCoreQueries.some((q) => matchesPaper(paper, q)) && paper.score >= settings.thresholds.possible)
+			.sort((a, b) => b.score - a.score);
+	}
+	console.log(`Adjacent shown (score >= ${settings.thresholds.possible}): ${adjacent.length}`);
+
+	const newsletter = renderCombinedNewsletter(args.to, results, failures, adjacent, settings);
+
+	await mkdir(args.outputDir, { recursive: true });
+	await writeText(resolve(args.outputDir, 'newsletter.md'), newsletter);
+	await writeJson(resolve(args.outputDir, 'adjacent-candidates.json'), adjacentCandidates);
+	await writeJson(resolve(args.outputDir, 'adjacent-scored.json'), adjacent);
+
+	console.log(`\nNewsletter written to: ${resolve(args.outputDir, 'newsletter.md')}`);
+
+	if (args.seenFile && args.updateSeen) {
+		await saveSeenEntries(args.seenFile, [...seenEntries, ...buildSeenEntries(allNewPapers, args.to)]);
+	}
+}
+
 async function main(): Promise<void> {
 	const args = parseArgs(process.argv.slice(2));
 	const settings = await loadSettings(args);
+
+	console.log(`Scholar harness: fetching ${args.from} to ${args.to}`);
+	console.log(`Sources: ${VALID_SOURCES.filter((source) => settings.sources[source]).join(', ') || 'none'}`);
+	console.log(`Analyzer: ${args.analyzer}`);
+	console.log(`Output: ${args.outputDir}`);
+
+	if (args.combined) {
+		console.log('Mode: combined (all subscriptions + adjacent science)');
+		await runCombinedMode(args, settings);
+		return;
+	}
+
 	const subscription = selectSubscription(settings, args);
 	if (args.query) {
 		subscription.keywordQuery = args.query;
 	}
 
-	console.log(`Scholar harness: fetching ${args.from} to ${args.to}`);
 	console.log(`Subscription: ${subscription.focus.label} (${subscription.id})`);
-	console.log(`Sources: ${VALID_SOURCES.filter((source) => settings.sources[source]).join(', ') || 'none'}`);
-	console.log(`Analyzer: ${args.analyzer}`);
-	console.log(`Output: ${args.outputDir}`);
 
 	const fetchResult = await fetchAll(settings, subscription, args.from, args.to);
 	const rawPapers = fetchResult.papers;
