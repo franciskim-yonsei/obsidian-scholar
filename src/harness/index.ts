@@ -549,7 +549,7 @@ async function main(): Promise<void> {
 			totalMatched: 0,
 		}, unseenPapers.length === 0
 			? 'No newly discovered papers were found for this topic in this date range.'
-			: 'New papers were found for this topic, but none matched the current keyword filter.');
+			: 'New papers were found for this topic, but none matched the current keyword filter.', settings);
 	await writeText(resolve(args.outputDir, 'newsletter.md'), newsletter);
 
 	const report: HarnessReport = {

@@ -17,9 +17,6 @@ export function formatAuthors(authors: string[]): string {
 	return `${authors[0]} et al.`;
 }
 
-function toYamlString(value: string): string {
-	return JSON.stringify(value);
-}
 
 function getScoreBuckets(scored: ScoredPaper[], settings: ScholarSettings): {
 	high: ScoredPaper[];
@@ -74,26 +71,12 @@ function renderTopicBody(lines: string[], scored: ScoredPaper[], settings: Schol
 	}
 }
 
-function renderSingleFrontmatter(
-	subscription: TopicSubscription,
-	date: string,
-	stats: NewsletterStats,
-	high: number,
-	possible: number,
-	weak: number,
-): string[] {
+function renderFrontmatter(date: string, tags: string[]): string[] {
 	return [
 		'---',
 		`date: ${date}`,
-		`subscription_id: ${toYamlString(subscription.id)}`,
-		`topic: ${toYamlString(subscription.focus.label)}`,
-		`papers_fetched: ${stats.totalFetched}`,
-		`papers_deduped: ${stats.totalDeduped}`,
-		`papers_new: ${stats.totalNew}`,
-		`papers_matched: ${stats.totalMatched}`,
-		`high: ${high}`,
-		`possible: ${possible}`,
-		`weak: ${weak}`,
+		'tags:',
+		...tags.map((tag) => `  - ${tag}`),
 		'---',
 		'',
 	];
@@ -106,10 +89,9 @@ export function renderNewsletter(
 	settings: ScholarSettings,
 	stats: NewsletterStats,
 ): string {
-	const { high, possible, weak } = getScoreBuckets(scored, settings);
 	const lines: string[] = [];
 
-	lines.push(...renderSingleFrontmatter(subscription, date, stats, high.length, possible.length, weak.length));
+	lines.push(...renderFrontmatter(date, settings.newsletterTags));
 	lines.push(`# Scholar Daily: ${subscription.focus.label} — ${date}`);
 	lines.push(`*${stats.totalMatched} matched paper${stats.totalMatched === 1 ? '' : 's'} from ${stats.totalNew} new candidate${stats.totalNew === 1 ? '' : 's'}*`);
 	lines.push('');
@@ -126,47 +108,27 @@ export function renderNewsletter(
 export function renderEmptyNewsletter(
 	subscription: TopicSubscription,
 	date: string,
-	stats: NewsletterStats,
+	_stats: NewsletterStats,
 	message: string,
+	settings: ScholarSettings,
 ): string {
 	const lines: string[] = [];
-	lines.push(...renderSingleFrontmatter(subscription, date, stats, 0, 0, 0));
+	lines.push(...renderFrontmatter(date, settings.newsletterTags));
 	lines.push(`# Scholar Daily: ${subscription.focus.label} — ${date}`);
 	lines.push('');
 	lines.push(message);
 	return lines.join('\n');
 }
 
-function renderCombinedFrontmatter(date: string, results: TopicRunResult[], failures: TopicRunFailure[], adjacent: ScoredPaper[], settings: ScholarSettings): string[] {
-	const totalFetched = results.reduce((sum, result) => sum + result.totalFetched, 0);
-	const totalDeduped = results.reduce((sum, result) => sum + result.totalDeduped, 0);
-	const totalNew = results.reduce((sum, result) => sum + result.totalNew, 0);
-	const totalMatched = results.reduce((sum, result) => sum + result.totalMatched, 0);
-	const allScored = results.flatMap((result) => result.scored);
-	const { high, possible, weak } = getScoreBuckets(allScored, settings);
-
-	return [
-		'---',
-		`date: ${date}`,
-		`topics_enabled: ${results.length + failures.length}`,
-		`topics_succeeded: ${results.length}`,
-		`topics_failed: ${failures.length}`,
-		`papers_fetched: ${totalFetched}`,
-		`papers_deduped: ${totalDeduped}`,
-		`papers_new: ${totalNew}`,
-		`papers_matched: ${totalMatched}`,
-		`papers_adjacent: ${adjacent.length}`,
-		`high: ${high.length}`,
-		`possible: ${possible.length}`,
-		`weak: ${weak.length}`,
-		'---',
-		'',
-	];
-}
 
 function renderAdjacentSection(lines: string[], adjacent: ScoredPaper[]): void {
 	lines.push('## Adjacent science');
 	lines.push('');
+	if (adjacent.length === 0) {
+		lines.push('*No adjacent papers met the relevance threshold today.*');
+		lines.push('');
+		return;
+	}
 	lines.push('*Papers outside your subscribed topics — scored for methodological or conceptual relevance*');
 	lines.push('');
 	for (const paper of adjacent) {
@@ -188,7 +150,7 @@ export function renderCombinedNewsletter(
 	const totalMatched = results.reduce((sum, result) => sum + result.totalMatched, 0);
 	const totalNew = results.reduce((sum, result) => sum + result.totalNew, 0);
 
-	lines.push(...renderCombinedFrontmatter(date, results, failures, adjacent, settings));
+	lines.push(...renderFrontmatter(date, settings.newsletterTags));
 	lines.push(`# Scholar Daily: ${date}`);
 	lines.push(`*${totalMatched} matched paper${totalMatched === 1 ? '' : 's'} across ${results.length} successful topic${results.length === 1 ? '' : 's'} from ${totalNew} new candidate${totalNew === 1 ? '' : 's'}*`);
 	lines.push('');
@@ -220,8 +182,6 @@ export function renderCombinedNewsletter(
 	for (const result of results) {
 		lines.push(`## ${result.subscription.focus.label}`);
 		lines.push('');
-		lines.push(`*${result.totalMatched} matched paper${result.totalMatched === 1 ? '' : 's'} from ${result.totalNew} new candidate${result.totalNew === 1 ? '' : 's'}*`);
-		lines.push('');
 		if (result.scored.length === 0) {
 			lines.push(result.message ?? 'No new papers matched this topic on this date.');
 			lines.push('');
@@ -231,7 +191,7 @@ export function renderCombinedNewsletter(
 		renderTopicBody(lines, result.scored, settings, '###');
 	}
 
-	if (adjacent.length > 0) {
+	if (adjacent.length > 0 || settings.adjacentQuery.trim()) {
 		renderAdjacentSection(lines, adjacent);
 	}
 

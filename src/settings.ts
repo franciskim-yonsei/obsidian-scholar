@@ -294,6 +294,25 @@ export class ScholarSettingTab extends PluginSettingTab {
 				return text;
 			});
 
+		new Setting(containerEl)
+			.setName('Newsletter tags')
+			.setDesc('Comma-separated tags added to each newsletter\'s YAML frontmatter (e.g. "newsletter, scholar"). Useful for filtering in Obsidian search or Dataview.')
+			.addText((text) =>
+				text
+					.setPlaceholder('newsletter')
+					.setValue(this.plugin.settings.newsletterTags.join(', '))
+					.onChange(async (value) => {
+						this.plugin.settings.newsletterTags = value
+							.split(',')
+							.map((t) => t.trim())
+							.filter((t) => t.length > 0);
+						if (this.plugin.settings.newsletterTags.length === 0) {
+							this.plugin.settings.newsletterTags = ['newsletter'];
+						}
+						await this.persist();
+					}),
+			);
+
 		new Setting(containerEl).setName('Optional API keys').setHeading();
 		new Setting(containerEl)
 			.setName('PubMed API key')

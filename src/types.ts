@@ -51,6 +51,7 @@ export interface ScholarSettings {
 	runOnStartup: boolean;
 	subscriptions: TopicSubscription[];
 	adjacentQuery: string;
+	newsletterTags: string[];
 	sources: {
 		pubmed: boolean;
 		biorxiv: boolean;

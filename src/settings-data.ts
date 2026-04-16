@@ -40,6 +40,7 @@ export const DEFAULT_SETTINGS: ScholarSettings = {
 	runOnStartup: true,
 	subscriptions: [DEFAULT_SUBSCRIPTION],
 	adjacentQuery: DEFAULT_ADJACENT_QUERY,
+	newsletterTags: ['newsletter'],
 	sources: {
 		pubmed: true,
 		biorxiv: false,
@@ -173,6 +174,9 @@ export function mergeSettings(saved?: LegacyScholarSettings): ScholarSettings {
 		runOnStartup: saved?.runOnStartup ?? DEFAULT_SETTINGS.runOnStartup,
 		subscriptions: getMergedSubscriptions(saved),
 		adjacentQuery: saved?.adjacentQuery ?? DEFAULT_SETTINGS.adjacentQuery,
+		newsletterTags: Array.isArray(saved?.newsletterTags) && saved.newsletterTags.length > 0
+			? saved.newsletterTags
+			: DEFAULT_SETTINGS.newsletterTags,
 		sources: {
 			pubmed: saved?.sources?.pubmed ?? DEFAULT_SETTINGS.sources.pubmed,
 			biorxiv: saved?.sources?.biorxiv ?? DEFAULT_SETTINGS.sources.biorxiv,
