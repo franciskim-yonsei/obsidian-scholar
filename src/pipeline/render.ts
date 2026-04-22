@@ -155,16 +155,6 @@ export function renderCombinedNewsletter(
 	lines.push(`*${totalMatched} matched paper${totalMatched === 1 ? '' : 's'} across ${results.length} successful topic${results.length === 1 ? '' : 's'} from ${totalNew} new candidate${totalNew === 1 ? '' : 's'}*`);
 	lines.push('');
 
-	lines.push('## Topic summary');
-	lines.push('');
-	for (const result of results) {
-		lines.push(`- **${result.subscription.focus.label}** — ${result.totalMatched} matched, ${result.totalNew} new, ${result.totalFetched} fetched`);
-	}
-	for (const failure of failures) {
-		lines.push(`- **${failure.subscription.focus.label}** — failed: ${failure.message}`);
-	}
-	lines.push('');
-
 	if (failures.length > 0) {
 		lines.push('## Failed topics');
 		lines.push('');
