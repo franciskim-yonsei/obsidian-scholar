@@ -18,7 +18,7 @@
  *   --dry-run             Print the plan without running anything
  *
  * Tip: point --seen-file at the subscription-specific seen-log path, for example
- * <Vault>/.scholar/seen/default.json, if you want catch-up runs to update the
+ * <Vault>/.obsidian/plugins/obsidian-scholar/state/seen/default.json, if you want catch-up runs to update the
  * plugin's live seen log directly and avoid any merge step.
  *
  * The script tracks completed batches in .harness-output/catchup-progress.json

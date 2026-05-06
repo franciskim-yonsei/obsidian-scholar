@@ -52,6 +52,16 @@ function preferUrl(a: Paper, b: Paper, chosenSource: PaperSource): string {
 	return preferString(a.url, b.url) ?? '';
 }
 
+function preferSourceField(a: Paper, b: Paper, chosenSource: PaperSource, field: keyof Pick<Paper, 'sourcePublicationDate' | 'sourceIndexedDate' | 'sourceIndexStatus'>): string | undefined {
+	if (chosenSource === a.source && a[field]) {
+		return a[field];
+	}
+	if (chosenSource === b.source && b[field]) {
+		return b[field];
+	}
+	return preferString(a[field], b[field]);
+}
+
 export function mergePapers(a: Paper, b: Paper): Paper {
 	const source = preferSource(a.source, b.source);
 	return {
@@ -62,6 +72,9 @@ export function mergePapers(a: Paper, b: Paper): Paper {
 		authors: mergeAuthors(a.authors, b.authors),
 		abstract: preferString(a.abstract, b.abstract) ?? '',
 		publicationDate: preferString(a.publicationDate, b.publicationDate) ?? '',
+		sourcePublicationDate: preferSourceField(a, b, source, 'sourcePublicationDate'),
+		sourceIndexedDate: preferSourceField(a, b, source, 'sourceIndexedDate'),
+		sourceIndexStatus: preferSourceField(a, b, source, 'sourceIndexStatus'),
 		source,
 		url: preferUrl(a, b, source),
 	};

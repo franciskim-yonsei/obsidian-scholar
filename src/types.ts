@@ -10,6 +10,9 @@ export interface Paper {
 	authors: string[];
 	abstract: string;
 	publicationDate: string;
+	sourcePublicationDate?: string;
+	sourceIndexedDate?: string;
+	sourceIndexStatus?: string;
 	source: PaperSource;
 	url: string;
 }
@@ -25,6 +28,11 @@ export interface SeenEntry {
 	pmid?: string;
 	ssid?: string;
 	title: string;
+	publicationDate?: string;
+	sourcePublicationDate?: string;
+	sourceIndexedDate?: string;
+	sourceIndexStatus?: string;
+	source?: PaperSource;
 	dateSeen: string;
 }
 
@@ -48,7 +56,7 @@ export interface TopicSubscription {
 
 export interface ScholarSettings {
 	inboxFolder: string;
-	runOnStartup: boolean;
+	recheckWindowDays: number;
 	subscriptions: TopicSubscription[];
 	adjacentQuery: string;
 	newsletterTags: string[];
@@ -67,13 +75,12 @@ export interface ScholarSettings {
 		model: string;
 		thinkingLevel: ThinkingLevel;
 	};
-	catchupLimitDays: number;
 	pubmedApiKey: string;
 }
 
 export interface PluginData {
-	lastRunTimestamp: string | null;
 	settings: ScholarSettings;
+	seenLogs: Record<string, SeenLog>;
 }
 
 export interface TopicRunResult {

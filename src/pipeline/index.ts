@@ -1,6 +1,5 @@
-import { App } from 'obsidian';
 import { Paper, ScholarSettings, SeenEntry, SeenLog, TopicRunResult, TopicSubscription } from '../types';
-import { buildSeenSet, getPaperKeys, loadSeenLog, saveSeenLog } from '../utils/seenLog';
+import { buildSeenSet, getPaperKeys } from '../utils/seenLog';
 import { analyzeWithPi } from './analyzer';
 import { deduplicateCrossSource } from './deduplicator';
 import { fetchAll } from './fetcher';
@@ -12,6 +11,11 @@ function buildSeenEntries(papers: Paper[], dateSeen: string): SeenEntry[] {
 		pmid: paper.pmid,
 		ssid: paper.ssid,
 		title: paper.title,
+		publicationDate: paper.publicationDate,
+		sourcePublicationDate: paper.sourcePublicationDate,
+		sourceIndexedDate: paper.sourceIndexedDate,
+		sourceIndexStatus: paper.sourceIndexStatus,
+		source: paper.source,
 		dateSeen,
 	}));
 }
@@ -20,26 +24,43 @@ function describeFailures(failures: { name: string; message: string }[]): string
 	return failures.map((failure) => `${failure.name} (${failure.message})`).join('; ');
 }
 
-export async function commitSeenEntries(
-	app: App,
-	subscription: TopicSubscription,
+export function commitSeenEntries(
+	seenLog: SeenLog,
 	papers: Paper[],
 	dateSeen: string,
-): Promise<void> {
+): void {
 	if (papers.length === 0) {
 		return;
 	}
 
-	const seenLog: SeenLog = await loadSeenLog(app.vault, subscription.id);
-	seenLog.entries.push(...buildSeenEntries(papers, dateSeen));
+	const seenKeys = buildSeenSet(seenLog);
+	for (const entry of buildSeenEntries(papers, dateSeen)) {
+		const candidateKeys = getPaperKeys({
+			doi: entry.doi,
+			pmid: entry.pmid,
+			ssid: entry.ssid,
+			title: entry.title,
+			authors: [],
+			abstract: '',
+			publicationDate: entry.publicationDate ?? '',
+			source: entry.source ?? 'pubmed',
+			url: '',
+		});
+		if (candidateKeys.some((key) => seenKeys.has(key))) {
+			continue;
+		}
+		seenLog.entries.push(entry);
+		for (const key of candidateKeys) {
+			seenKeys.add(key);
+		}
+	}
 	seenLog.lastUpdated = new Date().toISOString();
-	await saveSeenLog(app.vault, subscription.id, seenLog);
 }
 
 export async function runPipelineForDateRange(
-	app: App,
 	settings: ScholarSettings,
 	subscription: TopicSubscription,
+	seenLog: SeenLog,
 	fromDate: string,
 	toDate: string,
 ): Promise<TopicRunResult> {
@@ -53,7 +74,6 @@ export async function runPipelineForDateRange(
 	}
 
 	const deduplicatedPapers = deduplicateCrossSource(rawPapers);
-	const seenLog = await loadSeenLog(app.vault, subscription.id);
 	const seenSet = buildSeenSet(seenLog);
 	const newPapers = deduplicatedPapers.filter((paper) => !getPaperKeys(paper).some((key) => seenSet.has(key)));
 
@@ -66,7 +86,7 @@ export async function runPipelineForDateRange(
 			totalDeduped: deduplicatedPapers.length,
 			totalNew: 0,
 			totalMatched: 0,
-			message: 'No newly discovered papers were found for this topic on this date.',
+			message: 'No newly discovered papers were found for this topic in the recheck window.',
 			seenPapersToAppend: [],
 		};
 	}

@@ -33,12 +33,16 @@ export async function fetchBioRxiv(from: string, to: string): Promise<Paper[]> {
 			}
 
 			const doi = item.doi?.trim();
+			const publicationDate = item.date?.trim() ?? '';
 			papers.push({
 				doi,
 				title,
 				authors: splitAuthorString(item.authors ?? ''),
 				abstract,
-				publicationDate: item.date?.trim() ?? '',
+				publicationDate,
+				sourcePublicationDate: publicationDate,
+				sourceIndexedDate: publicationDate,
+				sourceIndexStatus: 'biorxiv-date',
 				source: item.server ?? 'biorxiv',
 				url: doi ? `https://doi.org/${doi}` : '',
 			});

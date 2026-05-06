@@ -1,10 +1,7 @@
 import { ResearchFocus, ScholarSettings, TopicSubscription } from './types';
 import { toSafePathSegment } from './utils/strings';
 
-interface LegacyScholarSettings extends Partial<ScholarSettings> {
-	keywordQuery?: string;
-	focus?: Partial<ResearchFocus>;
-}
+type SavedScholarSettings = Partial<ScholarSettings>;
 
 interface PartialSubscription {
 	id?: string;
@@ -37,7 +34,7 @@ export const DEFAULT_SUBSCRIPTION: TopicSubscription = {
 
 export const DEFAULT_SETTINGS: ScholarSettings = {
 	inboxFolder: 'Inbox',
-	runOnStartup: true,
+	recheckWindowDays: 30,
 	subscriptions: [DEFAULT_SUBSCRIPTION],
 	adjacentQuery: DEFAULT_ADJACENT_QUERY,
 	newsletterTags: ['newsletter'],
@@ -56,7 +53,6 @@ export const DEFAULT_SETTINGS: ScholarSettings = {
 		model: 'openai-codex/gpt-5.4',
 		thinkingLevel: 'high',
 	},
-	catchupLimitDays: 30,
 	pubmedApiKey: '',
 };
 
@@ -100,19 +96,6 @@ function mergeSubscription(saved?: PartialSubscription, fallback: TopicSubscript
 	};
 }
 
-function buildLegacySubscription(saved?: LegacyScholarSettings): TopicSubscription {
-	return mergeSubscription(
-		{
-			id: DEFAULT_SUBSCRIPTION_ID,
-			enabled: true,
-			keywordQuery: saved?.keywordQuery,
-			focus: saved?.focus,
-		},
-		DEFAULT_SUBSCRIPTION,
-		0,
-	);
-}
-
 function deduplicateSubscriptionIds(subscriptions: TopicSubscription[]): TopicSubscription[] {
 	const seen = new Set<string>();
 	return subscriptions.map((subscription, index) => {
@@ -138,16 +121,16 @@ function deduplicateSubscriptionIds(subscriptions: TopicSubscription[]): TopicSu
 	});
 }
 
-function getMergedSubscriptions(saved?: LegacyScholarSettings): TopicSubscription[] {
-	if (Array.isArray(saved?.subscriptions) && saved.subscriptions.length > 0) {
-		return deduplicateSubscriptionIds(
-			saved.subscriptions.map((subscription, index) =>
-				mergeSubscription(subscription, index === 0 ? DEFAULT_SUBSCRIPTION : createTopicSubscription(`Topic ${index + 1}`), index),
-			),
-		);
+function getMergedSubscriptions(saved?: SavedScholarSettings): TopicSubscription[] {
+	if (!Array.isArray(saved?.subscriptions) || saved.subscriptions.length === 0) {
+		return [cloneSubscription(DEFAULT_SUBSCRIPTION)];
 	}
 
-	return [buildLegacySubscription(saved)];
+	return deduplicateSubscriptionIds(
+		saved.subscriptions.map((subscription, index) =>
+			mergeSubscription(subscription, index === 0 ? DEFAULT_SUBSCRIPTION : createTopicSubscription(`Topic ${index + 1}`), index),
+		),
+	);
 }
 
 export function createTopicSubscription(label = 'New topic'): TopicSubscription {
@@ -168,10 +151,10 @@ export function getEnabledSubscriptions(settings: ScholarSettings): TopicSubscri
 	return settings.subscriptions.filter((subscription) => subscription.enabled);
 }
 
-export function mergeSettings(saved?: LegacyScholarSettings): ScholarSettings {
+export function mergeSettings(saved?: SavedScholarSettings): ScholarSettings {
 	return {
 		inboxFolder: saved?.inboxFolder ?? DEFAULT_SETTINGS.inboxFolder,
-		runOnStartup: saved?.runOnStartup ?? DEFAULT_SETTINGS.runOnStartup,
+		recheckWindowDays: saved?.recheckWindowDays ?? DEFAULT_SETTINGS.recheckWindowDays,
 		subscriptions: getMergedSubscriptions(saved),
 		adjacentQuery: saved?.adjacentQuery ?? DEFAULT_SETTINGS.adjacentQuery,
 		newsletterTags: Array.isArray(saved?.newsletterTags) && saved.newsletterTags.length > 0
@@ -192,7 +175,6 @@ export function mergeSettings(saved?: LegacyScholarSettings): ScholarSettings {
 			model: saved?.llm?.model ?? DEFAULT_SETTINGS.llm.model,
 			thinkingLevel: saved?.llm?.thinkingLevel ?? DEFAULT_SETTINGS.llm.thinkingLevel,
 		},
-		catchupLimitDays: saved?.catchupLimitDays ?? DEFAULT_SETTINGS.catchupLimitDays,
 		pubmedApiKey: saved?.pubmedApiKey ?? DEFAULT_SETTINGS.pubmedApiKey,
 	};
 }

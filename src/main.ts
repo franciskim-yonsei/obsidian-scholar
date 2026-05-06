@@ -5,10 +5,10 @@ import { analyzeAdjacentWithPi } from './pipeline/analyzer';
 import { applyKeywordFilter, matchesPaper, parseQuery } from './pipeline/keywordFilter';
 import { getEnabledSubscriptions, mergeSettings, normalizeSubscriptions } from './settings-data';
 import { ScholarSettingTab } from './settings';
-import { Paper, PluginData, ScholarSettings, ScoredPaper, TopicRunFailure, TopicRunResult, TopicSubscription } from './types';
-import { getClampedCatchupStart, getDaysBetween, getYesterdayDateString, isSameLocalDay, toDateString } from './utils/dates';
+import { Paper, PluginData, ScholarSettings, ScoredPaper, SeenLog, TopicRunFailure, TopicRunResult, TopicSubscription } from './types';
+import { addDays, toDateString } from './utils/dates';
 import { getErrorMessage } from './utils/strings';
-import { getPaperKeys } from './utils/seenLog';
+import { getEmptySeenLog, getPaperKeys, normalizeSeenLog } from './utils/seenLog';
 
 function deduplicatePapers(papers: Paper[]): Paper[] {
 	const seen = new Set<string>();
@@ -75,7 +75,7 @@ async function buildAdjacentResults(
 
 export default class ScholarPlugin extends Plugin {
 	settings: ScholarSettings = mergeSettings();
-	lastRunTimestamp: string | null = null;
+	private seenLogs: Record<string, SeenLog> = {};
 	private isRunning = false;
 
 	async onload(): Promise<void> {
@@ -83,123 +83,108 @@ export default class ScholarPlugin extends Plugin {
 		this.addSettingTab(new ScholarSettingTab(this.app, this));
 
 		this.addRibbonIcon('newspaper', 'Scholar: fetch papers', () => {
-			void this.runScheduled(true);
+			void this.runManual();
 		});
 
 		this.addCommand({
 			id: 'scholar-run',
 			name: 'Fetch papers and generate newsletter',
 			callback: () => {
-				void this.runScheduled(true);
+				void this.runManual();
 			},
 		});
-
-		if (this.settings.runOnStartup) {
-			this.app.workspace.onLayoutReady(() => {
-				void this.runScheduled(false);
-			});
-		}
 	}
 
-	private getDatesToProcess(force: boolean, now: Date): string[] {
-		if (!this.lastRunTimestamp) {
-			return [force ? toDateString(now) : getYesterdayDateString(now)];
-		}
-
-		const lastRun = new Date(this.lastRunTimestamp);
-		if (Number.isNaN(lastRun.getTime())) {
-			return [force ? toDateString(now) : getYesterdayDateString(now)];
-		}
-
-		const catchupStart = getClampedCatchupStart(lastRun, now, this.settings.catchupLimitDays);
-		const dates = getDaysBetween(catchupStart, now);
-		if (dates.length === 0 && force) {
-			return [toDateString(now)];
-		}
-
-		return dates;
+	async onExternalSettingsChange(): Promise<void> {
+		await this.loadPluginData();
 	}
 
-	async runScheduled(force: boolean): Promise<void> {
+	private getSeenLog(subscriptionId: string): SeenLog {
+		const existing = this.seenLogs[subscriptionId];
+		if (existing) {
+			return existing;
+		}
+		const created = getEmptySeenLog();
+		this.seenLogs[subscriptionId] = created;
+		return created;
+	}
+
+	private getRecheckRange(now: Date): { from: string; to: string } {
+		const windowDays = Math.max(1, Math.round(this.settings.recheckWindowDays));
+		const to = toDateString(now);
+		const from = toDateString(addDays(now, -(windowDays - 1)));
+		return { from, to };
+	}
+
+	async runManual(): Promise<void> {
 		if (this.isRunning) {
-			if (force) {
-				new Notice('Scholar is already running.');
-			}
+			new Notice('Scholar is already running.');
 			return;
 		}
 
+		await this.loadPluginData();
 		const activeSubscriptions = getEnabledSubscriptions(this.settings);
 		if (activeSubscriptions.length === 0) {
-			if (force) {
-				new Notice('Scholar has no enabled topic subscriptions.');
-			}
+			new Notice('Scholar has no enabled topic subscriptions.');
 			return;
 		}
 
 		const now = new Date();
-		if (!force && this.lastRunTimestamp) {
-			const lastRun = new Date(this.lastRunTimestamp);
-			if (!Number.isNaN(lastRun.getTime()) && isSameLocalDay(lastRun, now)) {
-				return;
-			}
-		}
-
-		const datesToProcess = this.getDatesToProcess(force, now);
-		if (datesToProcess.length === 0) {
-			return;
-		}
-
+		const runDate = toDateString(now);
+		const { from, to } = this.getRecheckRange(now);
 		this.isRunning = true;
+
 		let completedRuns = 0;
-		let writtenNewsletters = 0;
+		let wroteNewsletter = false;
+		const results: TopicRunResult[] = [];
+		const failures: TopicRunFailure[] = [];
 		const allFailures: string[] = [];
 
 		try {
-			for (const date of datesToProcess) {
-				const results: TopicRunResult[] = [];
-				const failures: TopicRunFailure[] = [];
-
-				for (const subscription of activeSubscriptions) {
-					new Notice(`Scholar: processing ${date} (${subscription.focus.label})...`);
-					try {
-						const result = await runPipelineForDateRange(this.app, this.settings, subscription, date, date);
-						results.push(result);
-						completedRuns += 1;
-					} catch (error) {
-						const message = getErrorMessage(error);
-						failures.push({ subscription, message });
-						allFailures.push(`${date} — ${subscription.focus.label}: ${message}`);
-						console.error(`Scholar: pipeline failed for ${subscription.focus.label} on ${date}.`, error);
-					}
-				}
-
-				if (results.length === 0 && failures.length > 0) {
-					continue;
-				}
-
-				let adjacent: ScoredPaper[] = [];
+			for (const subscription of activeSubscriptions) {
+				new Notice(`Scholar: processing ${from} to ${to} (${subscription.focus.label})...`);
 				try {
-					adjacent = await buildAdjacentResults(results, activeSubscriptions, this.settings);
+					const result = await runPipelineForDateRange(this.settings, subscription, this.getSeenLog(subscription.id), from, to);
+					results.push(result);
+					completedRuns += 1;
 				} catch (error) {
-					console.warn('Scholar: adjacent-science analysis failed, continuing without it.', error);
-				}
-
-				await writeCombinedNewsletter(this.app, this.settings, date, results, failures, adjacent);
-				writtenNewsletters += 1;
-
-				for (const result of results) {
-					await commitSeenEntries(this.app, result.subscription, result.seenPapersToAppend, date);
+					const message = getErrorMessage(error);
+					failures.push({ subscription, message });
+					allFailures.push(`${subscription.focus.label}: ${message}`);
+					console.error(`Scholar: pipeline failed for ${subscription.focus.label}.`, error);
 				}
 			}
 
+			let adjacent: ScoredPaper[] = [];
+			try {
+				adjacent = await buildAdjacentResults(results, activeSubscriptions, this.settings);
+			} catch (error) {
+				console.warn('Scholar: adjacent-science analysis failed, continuing without it.', error);
+			}
+
+			const totalNew = results.reduce((sum, result) => sum + result.totalNew, 0);
+			const shouldWriteNewsletter = totalNew > 0 || failures.length > 0;
+			if (shouldWriteNewsletter) {
+				await writeCombinedNewsletter(this.app, this.settings, runDate, from, to, results, failures, adjacent);
+				wroteNewsletter = true;
+			}
+
+			for (const result of results) {
+				commitSeenEntries(this.getSeenLog(result.subscription.id), result.seenPapersToAppend, runDate);
+			}
+
+			await this.savePluginData();
+
 			if (allFailures.length === 0) {
-				this.lastRunTimestamp = now.toISOString();
-				await this.savePluginData();
-				new Notice(`Scholar: finished ${writtenNewsletters} newsletter${writtenNewsletters === 1 ? '' : 's'}.`);
+				if (wroteNewsletter) {
+					new Notice('Scholar: finished; wrote newsletter update.');
+					return;
+				}
+				new Notice('Scholar: finished; no newly discovered papers in the recheck window.');
 				return;
 			}
 
-			new Notice(`Scholar: wrote ${writtenNewsletters} newsletter${writtenNewsletters === 1 ? '' : 's'} and completed ${completedRuns} topic run${completedRuns === 1 ? '' : 's'}, but ${allFailures.length} failed. Check the console.`);
+			new Notice(`Scholar: completed ${completedRuns} topic run${completedRuns === 1 ? '' : 's'}${wroteNewsletter ? ' and wrote a newsletter update' : ''}, but ${allFailures.length} failed. Check the console.`);
 		} finally {
 			this.isRunning = false;
 		}
@@ -207,16 +192,19 @@ export default class ScholarPlugin extends Plugin {
 
 	async loadPluginData(): Promise<void> {
 		const loaded = (await this.loadData()) as Partial<PluginData> | null;
-		this.lastRunTimestamp = loaded?.lastRunTimestamp ?? null;
 		this.settings = mergeSettings(loaded?.settings);
 		normalizeSubscriptions(this.settings);
+		const loadedSeenLogs = loaded?.seenLogs && typeof loaded.seenLogs === 'object' ? loaded.seenLogs : {};
+		this.seenLogs = Object.fromEntries(
+			Object.entries(loadedSeenLogs).map(([subscriptionId, log]) => [subscriptionId, normalizeSeenLog(log)]),
+		);
 	}
 
 	async savePluginData(): Promise<void> {
 		normalizeSubscriptions(this.settings);
 		const data: PluginData = {
-			lastRunTimestamp: this.lastRunTimestamp,
 			settings: this.settings,
+			seenLogs: this.seenLogs,
 		};
 		await this.saveData(data);
 	}

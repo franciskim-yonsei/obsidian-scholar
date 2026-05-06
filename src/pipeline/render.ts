@@ -71,15 +71,20 @@ function renderTopicBody(lines: string[], scored: ScoredPaper[], settings: Schol
 	}
 }
 
-function renderFrontmatter(date: string, tags: string[]): string[] {
-	return [
+function renderFrontmatter(date: string, tags: string[], searchFrom?: string, searchTo?: string): string[] {
+	const lines = [
 		'---',
 		`date: ${date}`,
-		'tags:',
-		...tags.map((tag) => `  - ${tag}`),
-		'---',
-		'',
 	];
+	if (searchFrom && searchTo) {
+		lines.push(`search_from: ${searchFrom}`);
+		lines.push(`search_to: ${searchTo}`);
+	}
+	lines.push('tags:');
+	lines.push(...tags.map((tag) => `  - ${tag}`));
+	lines.push('---');
+	lines.push('');
+	return lines;
 }
 
 export function renderNewsletter(
@@ -125,7 +130,7 @@ function renderAdjacentSection(lines: string[], adjacent: ScoredPaper[]): void {
 	lines.push('## Adjacent science');
 	lines.push('');
 	if (adjacent.length === 0) {
-		lines.push('*No adjacent papers met the relevance threshold today.*');
+		lines.push('*No adjacent papers met the relevance threshold in this run.*');
 		lines.push('');
 		return;
 	}
@@ -145,15 +150,30 @@ export function renderCombinedNewsletter(
 	failures: TopicRunFailure[],
 	adjacent: ScoredPaper[],
 	settings: ScholarSettings,
+	searchFrom = date,
+	searchTo = date,
 ): string {
 	const lines: string[] = [];
 	const totalMatched = results.reduce((sum, result) => sum + result.totalMatched, 0);
 	const totalNew = results.reduce((sum, result) => sum + result.totalNew, 0);
 
-	lines.push(...renderFrontmatter(date, settings.newsletterTags));
+	lines.push(...renderFrontmatter(date, settings.newsletterTags, searchFrom, searchTo));
 	lines.push(`# Scholar Daily: ${date}`);
 	lines.push(`*${totalMatched} matched paper${totalMatched === 1 ? '' : 's'} across ${results.length} successful topic${results.length === 1 ? '' : 's'} from ${totalNew} new candidate${totalNew === 1 ? '' : 's'}*`);
+	lines.push(`*Search window: ${searchFrom} to ${searchTo}*`);
 	lines.push('');
+
+	if (results.length > 0) {
+		lines.push('## Topic summary');
+		lines.push('');
+		for (const result of results) {
+			lines.push(`- **${result.subscription.focus.label}** — ${result.totalMatched} matched, ${result.totalNew} new, ${result.totalFetched} fetched`);
+		}
+		for (const failure of failures) {
+			lines.push(`- **${failure.subscription.focus.label}** — failed: ${failure.message}`);
+		}
+		lines.push('');
+	}
 
 	if (failures.length > 0) {
 		lines.push('## Failed topics');
@@ -173,7 +193,7 @@ export function renderCombinedNewsletter(
 		lines.push(`## ${result.subscription.focus.label}`);
 		lines.push('');
 		if (result.scored.length === 0) {
-			lines.push(result.message ?? 'No new papers matched this topic on this date.');
+			lines.push(result.message ?? 'No new papers matched this topic in the recheck window.');
 			lines.push('');
 			continue;
 		}

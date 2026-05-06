@@ -137,25 +137,15 @@ export class ScholarSettingTab extends PluginSettingTab {
 			);
 
 		new Setting(containerEl)
-			.setName('Run on startup')
-			.setDesc('Automatically fetch papers when Obsidian finishes loading, at most once per local calendar day.')
-			.addToggle((toggle) =>
-				toggle.setValue(this.plugin.settings.runOnStartup).onChange(async (value) => {
-					this.plugin.settings.runOnStartup = value;
-					await this.persist();
-				}),
-			);
-
-		new Setting(containerEl)
-			.setName('Catch-up limit')
-			.setDesc('Maximum number of missed days to backfill automatically.')
+			.setName('Recheck window')
+			.setDesc('Number of recent publication dates to re-query when you run Scholar manually. This catches late-indexed PubMed and Europe PMC records without startup automation.')
 			.addSlider((slider) =>
 				slider
 					.setLimits(1, 90, 1)
 					.setDynamicTooltip()
-					.setValue(this.plugin.settings.catchupLimitDays)
+					.setValue(this.plugin.settings.recheckWindowDays)
 					.onChange(async (value) => {
-						this.plugin.settings.catchupLimitDays = value;
+						this.plugin.settings.recheckWindowDays = value;
 						await this.persist();
 					}),
 			);

@@ -13,6 +13,7 @@ interface EuropePmcResult {
 	abstractText?: string;
 	authorString?: string;
 	firstPublicationDate?: string;
+	firstIndexDate?: string;
 	fullTextUrlList?: {
 		fullTextUrl?: EuropePmcUrlEntry[];
 	};
@@ -62,13 +63,17 @@ export async function fetchEuropePmc(
 			const doi = item.doi?.trim();
 			const pmid = item.pmid?.trim();
 			const fullTextUrl = normalizeWhitespace(item.fullTextUrlList?.fullTextUrl?.[0]?.url ?? '');
+			const publicationDate = item.firstPublicationDate?.trim() ?? '';
 			papers.push({
 				doi,
 				pmid,
 				title,
 				authors: splitAuthorString(item.authorString ?? ''),
 				abstract,
-				publicationDate: item.firstPublicationDate?.trim() ?? '',
+				publicationDate,
+				sourcePublicationDate: publicationDate,
+				sourceIndexedDate: item.firstIndexDate?.trim(),
+				sourceIndexStatus: item.firstIndexDate ? 'firstIndexDate' : undefined,
 				source: 'europepmc',
 				url: fullTextUrl || (doi ? `https://doi.org/${doi}` : pmid ? `https://pubmed.ncbi.nlm.nih.gov/${pmid}/` : ''),
 			});

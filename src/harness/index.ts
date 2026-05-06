@@ -276,6 +276,11 @@ function buildSeenEntries(papers: Paper[], dateSeen: string): SeenEntry[] {
 		pmid: paper.pmid,
 		ssid: paper.ssid,
 		title: paper.title,
+		publicationDate: paper.publicationDate,
+		sourcePublicationDate: paper.sourcePublicationDate,
+		sourceIndexedDate: paper.sourceIndexedDate,
+		sourceIndexStatus: paper.sourceIndexStatus,
+		source: paper.source,
 		dateSeen,
 	}));
 }
